@@ -38,6 +38,9 @@ from spark_cli.cli import (
     dotted_get,
     dotted_set,
     dotted_unset,
+    render_init_spark_toml,
+    scaffold_module_files,
+    validate_init_module_name,
     describe_install_risk,
     enforce_runtime_versions,
     ensure_trust_for_install,
@@ -107,6 +110,45 @@ def make_module(name: str, capabilities: list[str]) -> Module:
 
 
 class SparkCliTests(unittest.TestCase):
+    def test_validate_init_module_name_rejects_bad_names(self) -> None:
+        validate_init_module_name("my-module")
+        validate_init_module_name("m1")
+        for bad in ("My-Module", "1starts-with-digit", "has_underscore", "-leading-dash", ""):
+            with self.assertRaises(SystemExit):
+                validate_init_module_name(bad)
+
+    def test_render_init_spark_toml_produces_parseable_manifest(self) -> None:
+        import tomllib as _toml
+        rendered = render_init_spark_toml("my-module", "python", "Demo module")
+        parsed = _toml.loads(rendered)
+        self.assertEqual(parsed["module"]["name"], "my-module")
+        self.assertEqual(parsed["runtime"]["kind"], "python")
+        self.assertEqual(parsed["runtime"]["version"], ">=3.11")
+        self.assertIn("python -c", parsed["healthcheck"]["command"])
+
+    def test_render_init_spark_toml_node_variant(self) -> None:
+        import tomllib as _toml
+        parsed = _toml.loads(render_init_spark_toml("my-bot", "node", "Demo bot"))
+        self.assertEqual(parsed["runtime"]["kind"], "node")
+        self.assertEqual(parsed["runtime"]["version"], ">=22")
+        self.assertIn("node -e", parsed["healthcheck"]["command"])
+
+    def test_scaffold_module_files_writes_expected_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "new-module"
+            created = scaffold_module_files(target, "new-module", "python", "Demo module")
+            names = sorted(path.name for path in created)
+            self.assertEqual(names, [".gitignore", "README.md", "spark.toml"])
+            gitignore = (target / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn("__pycache__/", gitignore)
+            readme = (target / "README.md").read_text(encoding="utf-8")
+            self.assertIn("# new-module", readme)
+            # Ensure the scaffold is installable by the CLI's own loader.
+            from spark_cli.cli import load_module
+            loaded = load_module(target)
+            self.assertEqual(loaded.name, "new-module")
+            self.assertEqual(loaded.kind, "service")
+
     def test_dotted_set_and_get_roundtrips_nested_paths(self) -> None:
         config: dict = {}
         dotted_set(config, "dashboard.port", 8765)

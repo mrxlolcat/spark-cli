@@ -1959,6 +1959,155 @@ def cmd_config_list(_: argparse.Namespace) -> int:
     return 0
 
 
+INIT_SPARK_TOML_TEMPLATE = """[module]
+name = "{name}"
+version = "0.1.0"
+kind = "service"
+plane = "execution"
+description = "{description}"
+license = "UNLICENSED"
+
+[runtime]
+kind = "{runtime_kind}"
+version = "{runtime_version}"
+
+[install.dev]
+commands = []
+
+[provides]
+capabilities = []
+
+[needs]
+modules = []
+capabilities = []
+secrets = []
+
+[claims]
+secrets = []
+ports = []
+routes = []
+
+[healthcheck]
+command = "{healthcheck_command}"
+timeout_seconds = 10
+success_hint = "{name} is healthy."
+failure_hint = "Run the healthcheck command from the module home for detail."
+
+[paths]
+home = "~/.spark/modules/{name}"
+state = "~/.spark/state/{name}"
+logs = "~/.spark/logs/{name}"
+"""
+
+
+INIT_README_TEMPLATE = """# {name}
+
+{description}
+
+## Quick install
+
+    spark install {target_hint}
+
+## Healthcheck
+
+    {healthcheck_command}
+
+## Layout
+
+* `spark.toml` -- manifest consumed by the Spark installer
+* edit `[install.dev].commands`, `[healthcheck].command`, and source files before shipping
+"""
+
+
+INIT_GITIGNORE_PYTHON = """__pycache__/
+*.py[cod]
+.venv/
+.env
+dist/
+build/
+*.egg-info/
+"""
+
+
+INIT_GITIGNORE_NODE = """node_modules/
+dist/
+.env
+npm-debug.log*
+"""
+
+
+INIT_VALID_NAME = re.compile(r"^[a-z][a-z0-9\-]*$")
+
+
+def validate_init_module_name(name: str) -> None:
+    if not INIT_VALID_NAME.match(name):
+        raise SystemExit(
+            f"Module name `{name}` is invalid. Use lowercase letters, digits, and dashes; must start with a letter."
+        )
+
+
+def render_init_spark_toml(name: str, kind: str, description: str) -> str:
+    if kind == "python":
+        runtime_kind = "python"
+        runtime_version = ">=3.11"
+        healthcheck = "python -c \\\"print('ok')\\\""
+    elif kind == "node":
+        runtime_kind = "node"
+        runtime_version = ">=22"
+        healthcheck = "node -e \\\"console.log('ok')\\\""
+    else:
+        raise SystemExit(f"Unsupported kind: {kind}. Use python or node.")
+    return INIT_SPARK_TOML_TEMPLATE.format(
+        name=name,
+        description=description,
+        runtime_kind=runtime_kind,
+        runtime_version=runtime_version,
+        healthcheck_command=healthcheck,
+    )
+
+
+def scaffold_module_files(target_dir: Path, name: str, kind: str, description: str) -> list[Path]:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    spark_toml = target_dir / "spark.toml"
+    readme = target_dir / "README.md"
+    gitignore = target_dir / ".gitignore"
+
+    spark_toml.write_text(render_init_spark_toml(name, kind, description), encoding="utf-8")
+    healthcheck_command = "python -c \"print('ok')\"" if kind == "python" else "node -e \"console.log('ok')\""
+    readme.write_text(
+        INIT_README_TEMPLATE.format(
+            name=name,
+            description=description,
+            target_hint=str(target_dir),
+            healthcheck_command=healthcheck_command,
+        ),
+        encoding="utf-8",
+    )
+    gitignore.write_text(
+        INIT_GITIGNORE_PYTHON if kind == "python" else INIT_GITIGNORE_NODE,
+        encoding="utf-8",
+    )
+    return [spark_toml, readme, gitignore]
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    name = args.name.strip()
+    validate_init_module_name(name)
+    target_dir = Path(args.path).resolve() if args.path else Path(name).resolve()
+    if target_dir.exists() and any(target_dir.iterdir()) and not args.force:
+        raise SystemExit(f"{target_dir} exists and is not empty; pass --force to scaffold into it anyway.")
+    description = args.description or f"Spark {args.kind} module."
+    created = scaffold_module_files(target_dir, name, args.kind, description)
+
+    print(f"Created new Spark {args.kind} module at {target_dir}:")
+    for path in created:
+        print(f"  {path}")
+    print("")
+    print("Next:")
+    print(f"  python -m spark_cli.cli install {target_dir}")
+    return 0
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     registry = load_registry_definition()
     entries = registry.get("modules", {}) or {}
@@ -2175,6 +2324,14 @@ def build_parser() -> argparse.ArgumentParser:
     stop_parser = subparsers.add_parser("stop", help="Stop tracked Spark processes")
     stop_parser.add_argument("target", nargs="?")
     stop_parser.set_defaults(func=cmd_stop)
+
+    init_parser = subparsers.add_parser("init", help="Scaffold a new Spark module in a directory")
+    init_parser.add_argument("name", help="Module name (lowercase + dashes)")
+    init_parser.add_argument("--kind", choices=["python", "node"], default="python", help="Runtime kind (default: python)")
+    init_parser.add_argument("--path", help="Target directory (default: ./<name>)")
+    init_parser.add_argument("--description", help="One-line module description for spark.toml and README")
+    init_parser.add_argument("--force", action="store_true", help="Scaffold into a non-empty directory")
+    init_parser.set_defaults(func=cmd_init)
 
     search_parser = subparsers.add_parser("search", help="Search the local blessed registry for modules")
     search_parser.add_argument("query", nargs="?", help="Filter by substring match against name or summary")
