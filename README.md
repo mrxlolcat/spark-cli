@@ -26,6 +26,8 @@ python -m spark_cli.cli setup telegram-starter --secret telegram.bot_token=<toke
 python -m spark_cli.cli status
 python -m spark_cli.cli status --json
 python -m spark_cli.cli doctor --json
+python -m spark_cli.cli update telegram-starter
+python -m spark_cli.cli uninstall spawner-ui
 python -m spark_cli.cli start
 python -m spark_cli.cli stop
 ```
@@ -61,3 +63,10 @@ The current supported ownership rule remains:
 
 - only `spark-telegram-bot` gets the Telegram bot token
 - `spark-intelligence-builder` and `spawner-ui` do not
+
+## Lifecycle
+
+- `install <module|bundle>` records modules from the local registry or a local repo path
+- `setup <bundle>` installs the bundle and writes generated module config
+- `update <module|bundle>` refreshes installed metadata and reapplies generated env to module `.env` files
+- `uninstall <module|bundle>` removes installed state, deletes generated module env files, removes managed `.env` blocks, and repairs bundle setup state

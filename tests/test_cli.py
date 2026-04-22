@@ -17,11 +17,14 @@ from spark_cli.cli import (
     detect_ingress_owner,
     expand_targets,
     generated_module_env_path,
+    remove_managed_env_block,
     print_install_summary,
     resolve_bundle_names,
     resolve_install_target,
     summarize_command_output,
+    update_setup_state_after_uninstall,
     update_env_file,
+    CONFIG_PATH,
 )
 
 
@@ -199,6 +202,33 @@ class SparkCliTests(unittest.TestCase):
         )
         self.assertEqual(envs["spark-telegram-bot"]["BOT_TOKEN"], "abc")
         self.assertNotIn("BOT_TOKEN", envs["spawner-ui"])
+
+    def test_remove_managed_env_block_strips_only_managed_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            env_path = Path(tmp_dir) / ".env"
+            env_path.write_text(
+                "KEEP=1\n# --- spark-cli managed start ---\nBOT_TOKEN=abc\n# --- spark-cli managed end ---\n",
+                encoding="utf-8",
+            )
+            remove_managed_env_block(env_path)
+            self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=1\n")
+
+    def test_update_setup_state_after_uninstall_clears_empty_setup(self) -> None:
+        original = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else None
+        try:
+            CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            CONFIG_PATH.write_text(
+                '{\n  "modules": ["spark-telegram-bot"],\n  "telegram_ingress_owner": "spark-telegram-bot"\n}\n',
+                encoding="utf-8",
+            )
+            update_setup_state_after_uninstall(["spark-telegram-bot"])
+            self.assertFalse(CONFIG_PATH.exists())
+        finally:
+            if original is not None:
+                CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                CONFIG_PATH.write_text(original, encoding="utf-8")
+            elif CONFIG_PATH.exists():
+                CONFIG_PATH.unlink()
 
 
 if __name__ == "__main__":

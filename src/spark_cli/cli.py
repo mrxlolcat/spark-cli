@@ -105,6 +105,13 @@ class Module:
                 return dict(block)
         return {}
 
+    def hook_command(self, hook_name: str) -> str | None:
+        hooks = self.manifest.get("hooks", {})
+        command = hooks.get(hook_name)
+        if not command:
+            return None
+        return str(command)
+
 
 def load_registry_definition() -> dict[str, Any]:
     return load_json(LOCAL_REGISTRY_PATH, {"modules": {}, "bundles": {}})
@@ -340,6 +347,28 @@ def update_env_file(path: Path, values: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def remove_managed_env_block(path: Path) -> None:
+    start = "# --- spark-cli managed start ---"
+    end = "# --- spark-cli managed end ---"
+    if not path.exists():
+        return
+    lines: list[str] = []
+    inside = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip() == start:
+            inside = True
+            continue
+        if line.strip() == end:
+            inside = False
+            continue
+        if not inside:
+            lines.append(line)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    output = "\n".join(lines).strip()
+    path.write_text((output + "\n") if output else "", encoding="utf-8")
+
+
 def cmd_list(_: argparse.Namespace) -> int:
     registry = load_registry_definition()
     installed = load_json(REGISTRY_PATH, {})
@@ -377,6 +406,12 @@ def install_module_record(module: Module) -> None:
     save_json(REGISTRY_PATH, installed)
 
 
+def remove_module_record(module_name: str) -> None:
+    installed = load_json(REGISTRY_PATH, {})
+    installed.pop(module_name, None)
+    save_json(REGISTRY_PATH, installed)
+
+
 def print_install_summary(modules: list[Module]) -> None:
     print("Install plan:")
     for module in modules:
@@ -393,6 +428,52 @@ def install_modules(modules: list[Module]) -> None:
         print(f"Installed {module.name} from {module.path}")
         if "telegram.ingress" in module.capabilities:
             print("This module declares telegram.ingress and should be the only live Telegram token owner.")
+
+
+def run_module_hook(module: Module, hook_name: str) -> None:
+    command = module.hook_command(hook_name)
+    if not command:
+        return
+    result = run_shell(command, module.path)
+    if result.returncode != 0:
+        raise SystemExit(
+            f"{module.name} hook `{hook_name}` failed: {summarize_command_output(result)}"
+        )
+
+
+def sync_generated_env_to_module(module: Module) -> None:
+    generated_path = generated_module_env_path(module)
+    env_path = module_env_path(module)
+    if env_path is None or not generated_path.exists():
+        return
+    values: dict[str, str] = {}
+    for line in generated_path.read_text(encoding="utf-8").splitlines():
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key] = value
+    if values:
+        update_env_file(env_path, values)
+
+
+def update_setup_state_after_uninstall(module_names: list[str]) -> None:
+    setup_state = load_json(CONFIG_PATH, {})
+    if not setup_state:
+        return
+    remaining = [name for name in setup_state.get("modules", []) if name not in module_names]
+    if not remaining:
+        if CONFIG_PATH.exists():
+            CONFIG_PATH.unlink()
+        return
+    setup_state["modules"] = remaining
+    if setup_state.get("telegram_ingress_owner") in module_names:
+        setup_state["telegram_ingress_owner"] = None
+    save_json(CONFIG_PATH, setup_state)
+
+
+def resolve_installed_modules() -> dict[str, Module]:
+    installed = load_json(REGISTRY_PATH, {})
+    return {name: load_module(Path(data["path"])) for name, data in installed.items()}
 
 
 def evaluate_module_health(module: Module) -> dict[str, Any]:
@@ -426,8 +507,7 @@ def evaluate_module_health(module: Module) -> dict[str, Any]:
 def cmd_install(args: argparse.Namespace) -> int:
     ensure_state_dirs()
     modules = discover_modules()
-    installed = load_json(REGISTRY_PATH, {})
-    installed_modules = {name: load_module(Path(data["path"])) for name, data in installed.items()}
+    installed_modules = resolve_installed_modules()
     registry = load_registry_definition()
     if args.target in registry.get("bundles", {}):
         bundle_modules = [modules[name] for name in resolve_bundle_names(args.target)]
@@ -450,8 +530,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     modules = discover_modules()
     bundle = resolve_bundle(args.bundle, modules)
     ingress_owner = detect_ingress_owner(bundle)
-    installed = load_json(REGISTRY_PATH, {})
-    installed_modules = {name: load_module(Path(data["path"])) for name, data in installed.items()}
+    installed_modules = resolve_installed_modules()
     conflicts = detect_capability_conflicts(bundle, installed_modules)
     if conflicts:
         raise SystemExit("Cannot run setup because of capability conflicts: " + "; ".join(conflicts))
@@ -577,6 +656,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if payload.get("ok") else 1
 
 
+def resolve_installed_target_modules(target: str | None) -> list[Module]:
+    modules = resolve_installed_modules()
+    if not modules:
+        return []
+    names = expand_targets(target, modules, include_all=True)
+    resolved: list[Module] = []
+    for name in names:
+        module = modules.get(name)
+        if module is None:
+            raise SystemExit(f"Unknown installed module: {name}")
+        resolved.append(module)
+    return resolved
+
+
 def load_pids() -> dict[str, Any]:
     return load_json(PID_PATH, {})
 
@@ -621,12 +714,10 @@ def start_module(module: Module) -> None:
 
 def cmd_start(args: argparse.Namespace) -> int:
     ensure_state_dirs()
-    installed = load_json(REGISTRY_PATH, {})
-    if not installed:
+    modules = resolve_installed_modules()
+    if not modules:
         print("No installed Spark modules recorded. Run `spark setup telegram-starter` first.")
         return 1
-
-    modules = {name: load_module(Path(data["path"])) for name, data in installed.items()}
     target_names = expand_targets(args.target, modules, include_all=True)
     for name in target_names:
         module = modules.get(name)
@@ -665,6 +756,51 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    ensure_state_dirs()
+    modules = resolve_installed_target_modules(args.target)
+    if not modules:
+        print("No installed Spark modules recorded.")
+        return 0
+    print_install_summary(modules)
+    for module in modules:
+        run_module_hook(module, "post_install")
+        install_module_record(module)
+        sync_generated_env_to_module(module)
+        print(f"Updated {module.name} from {module.path}")
+    return 0
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    ensure_state_dirs()
+    modules = resolve_installed_target_modules(args.target)
+    if not modules:
+        print("No installed Spark modules recorded.")
+        return 0
+
+    pids = load_pids()
+    removed_names: list[str] = []
+    for module in modules:
+        run_module_hook(module, "pre_uninstall")
+        record = pids.get(module.name)
+        if record:
+            stop_module(module.name, int(record["pid"]))
+            pids.pop(module.name, None)
+        generated_path = generated_module_env_path(module)
+        if generated_path.exists():
+            generated_path.unlink()
+        env_path = module_env_path(module)
+        if env_path is not None:
+            remove_managed_env_block(env_path)
+        remove_module_record(module.name)
+        run_module_hook(module, "post_uninstall")
+        removed_names.append(module.name)
+        print(f"Uninstalled {module.name}")
+    save_pids(pids)
+    update_setup_state_after_uninstall(removed_names)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="spark", description="Spark installer and operator CLI spike")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -694,6 +830,14 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser = subparsers.add_parser("doctor", help="Run diagnostic status and emit structured output")
     doctor_parser.add_argument("--json", action="store_true")
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    update_parser = subparsers.add_parser("update", help="Refresh installed modules from their current source paths")
+    update_parser.add_argument("target", nargs="?")
+    update_parser.set_defaults(func=cmd_update)
+
+    uninstall_parser = subparsers.add_parser("uninstall", help="Remove installed modules from Spark state and generated config")
+    uninstall_parser.add_argument("target", nargs="?")
+    uninstall_parser.set_defaults(func=cmd_uninstall)
 
     start_parser = subparsers.add_parser("start", help="Start startable modules")
     start_parser.add_argument("target", nargs="?")
