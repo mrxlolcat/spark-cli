@@ -159,11 +159,12 @@ pip install pytest
 python -m pytest tests/ -q
 ```
 
-Current focused suite: `99` tests in `tests/test_cli.py`.
+Current focused suite: `100` tests in `tests/test_cli.py`.
 
 ## More Docs
 
 - [docs/SPARK_ECOSYSTEM_LAUNCH.md](./docs/SPARK_ECOSYSTEM_LAUNCH.md) - public launch contract
+- [docs/SPARK_NORMIE_ONBOARDING_AND_GATEWAY_TEST.md](./docs/SPARK_NORMIE_ONBOARDING_AND_GATEWAY_TEST.md) - step-by-step install and real-time Telegram gateway test
 - [docs/LAUNCH_RUNBOOK.md](./docs/LAUNCH_RUNBOOK.md) - release-day verification
 - [docs/LAUNCH_SECURITY_AUDIT_2026-04-24.md](./docs/LAUNCH_SECURITY_AUDIT_2026-04-24.md) - launch security audit
 - [SECURITY.md](./SECURITY.md) - secret and launch security notes

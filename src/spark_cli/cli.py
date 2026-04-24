@@ -468,6 +468,14 @@ def collect_secret_values(
     return secret_values
 
 
+def ensure_generated_setup_secrets(secret_values: dict[str, str], modules: list[Module]) -> dict[str, str]:
+    values = dict(secret_values)
+    needs_relay_secret = any("telegram.relay_secret" in module.needed_secrets for module in modules)
+    if needs_relay_secret and not values.get("telegram.relay_secret"):
+        values["telegram.relay_secret"] = py_secrets.token_urlsafe(32)
+    return values
+
+
 def stdin_is_tty() -> bool:
     try:
         return bool(sys.stdin.isatty())
@@ -1622,6 +1630,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if interactive:
         print_setup_preflight(bundle)
     secret_values = collect_secret_values(args, bundle, interactive=interactive)
+    secret_values = ensure_generated_setup_secrets(secret_values, bundle)
     llm_provider, llm_env = build_llm_env(args, secret_values)
 
     setup_state = {

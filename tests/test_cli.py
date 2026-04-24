@@ -21,6 +21,7 @@ from spark_cli.cli import (
     detect_runtime_binary,
     clone_module_source,
     clone_target_for_module,
+    ensure_generated_setup_secrets,
     ensure_bundle_modules_available,
     delete_secret,
     fetch_secret,
@@ -99,7 +100,15 @@ from spark_cli.cli import (
 )
 
 
-def make_module(name: str, capabilities: list[str]) -> Module:
+def make_module(name: str, capabilities: list[str], secrets: list[str] | None = None) -> Module:
+    secret_definitions = {}
+    for secret_id in secrets or []:
+        toml_key = secret_id.replace(".", "_")
+        secret_definitions[toml_key] = {
+            "env_var": secret_id.upper().replace(".", "_"),
+            "storage": "keychain",
+            "required": False,
+        }
     return Module(
         name=name,
         path=Path(f"C:/tmp/{name}"),
@@ -113,6 +122,10 @@ def make_module(name: str, capabilities: list[str]) -> Module:
             "provides": {
                 "capabilities": capabilities,
             },
+            "needs": {
+                "secrets": secrets or [],
+            },
+            "secrets": secret_definitions,
         },
     )
 
@@ -624,7 +637,7 @@ class SparkCliTests(unittest.TestCase):
                     "plane": "ingress",
                     "capabilities": ["telegram.ingress"],
                     "needs_capabilities": ["spark.runtime"],
-                    "needs_secrets": ["telegram.bot_token", "telegram.admin_ids", "llm.zai.api_key"],
+                    "needs_secrets": ["telegram.bot_token", "telegram.admin_ids", "telegram.relay_secret", "llm.zai.api_key"],
                 },
             }
             registry = {"modules": {}, "bundles": {"telegram-starter": {"modules": list(manifests)}}}
@@ -653,6 +666,24 @@ class SparkCliTests(unittest.TestCase):
                             "required = false",
                             'storage = "keychain"',
                             'env_var = "ZAI_API_KEY"',
+                            "",
+                            "[secrets.telegram_bot_token]",
+                            'prompt = "Telegram bot token from @BotFather"',
+                            "required = true",
+                            'storage = "keychain"',
+                            'env_var = "BOT_TOKEN"',
+                            "",
+                            "[secrets.telegram_admin_ids]",
+                            'prompt = "Comma-separated Telegram admin IDs"',
+                            "required = true",
+                            'storage = "file"',
+                            'env_var = "ADMIN_TELEGRAM_IDS"',
+                            "",
+                            "[secrets.telegram_relay_secret]",
+                            'prompt = "Local Spawner-to-Telegram relay secret"',
+                            "required = false",
+                            'storage = "keychain"',
+                            'env_var = "TELEGRAM_RELAY_SECRET"',
                         ]
                     ),
                     encoding="utf-8",
@@ -693,7 +724,9 @@ class SparkCliTests(unittest.TestCase):
                 ]
             )
 
-            with patch.multiple("spark_cli.cli", **patches), patch("spark_cli.cli.load_registry_definition", return_value=registry):
+            with patch.multiple("spark_cli.cli", **patches), \
+                 patch("spark_cli.cli.load_registry_definition", return_value=registry), \
+                 patch("spark_cli.cli.keychain_available", return_value=False):
                 self.assertEqual(cmd_setup(args), 0)
 
             expected = [
@@ -716,13 +749,14 @@ class SparkCliTests(unittest.TestCase):
             self.assertEqual(setup_state["bundle"], "telegram-starter")
             self.assertEqual(setup_state["modules"], expected)
             self.assertEqual(setup_state["telegram_ingress_owner"], "spark-telegram-bot")
+            self.assertIn("telegram.relay_secret", setup_state["secret_keys"])
             self.assertEqual(setup_state["llm"]["provider"], "zai")
             self.assertEqual(setup_state["llm"]["model"], "glm-5.1")
             self.assertTrue(setup_state["llm"]["api_key_configured"])
 
             gateway_env = (module_config_dir / "spark-telegram-bot.env").read_text(encoding="utf-8")
             spawner_env = (module_config_dir / "spawner-ui.env").read_text(encoding="utf-8")
-            self.assertIn("BOT_TOKEN=123456:test-token", gateway_env)
+            self.assertNotIn("BOT_TOKEN=123456:test-token", gateway_env)
             self.assertIn("ADMIN_TELEGRAM_IDS=111,222", gateway_env)
             self.assertIn("SPAWNER_UI_URL=http://127.0.0.1:5173", gateway_env)
             self.assertIn("LLM_PROVIDER=zai", gateway_env)
@@ -733,6 +767,17 @@ class SparkCliTests(unittest.TestCase):
             self.assertIn("SPARK_LLM_PROVIDER=zai", spawner_env)
             self.assertNotIn("SPARK_ZAI_API_KEY", spawner_env)
             self.assertIn("MISSION_CONTROL_WEBHOOK_URLS=http://127.0.0.1:8788/spawner-events", spawner_env)
+            self.assertIn("TELEGRAM_RELAY_SECRET=", spawner_env)
+            self.assertNotIn("TELEGRAM_RELAY_SECRET=", gateway_env)
+            secrets_index = load_json(config_dir / "secrets_index.json", {})
+            secrets_file = load_json(config_dir / "secrets.local.json", {})
+            self.assertEqual(secrets_index["telegram.relay_secret"], "file")
+            self.assertIn("telegram.relay_secret", secrets_file)
+
+    def test_ensure_generated_setup_secrets_adds_relay_secret_for_gateway(self) -> None:
+        gateway = make_module("spark-telegram-bot", ["telegram.ingress"], secrets=["telegram.relay_secret"])
+        values = ensure_generated_setup_secrets({}, [gateway])
+        self.assertRegex(values["telegram.relay_secret"], r"^[A-Za-z0-9_-]{24,256}$")
 
     def test_print_install_summary_mentions_ingress_owner(self) -> None:
         gateway = make_module("spark-telegram-bot", ["telegram.ingress"])
