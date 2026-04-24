@@ -1638,7 +1638,9 @@ class SparkCliTests(unittest.TestCase):
                 CONFIG_PATH.unlink()
 
     def test_install_script_bootstraps_local_prefix_contract(self) -> None:
-        script = (Path(__file__).resolve().parents[1] / "scripts" / "install.sh").read_text(encoding="utf-8")
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "install.sh"
+        self.assertNotIn(b"\r\n", script_path.read_bytes())
+        script = script_path.read_text(encoding="utf-8")
         self.assertIn('SPARK_PREFIX="${SPARK_PREFIX:-$HOME/.spark}"', script)
         self.assertIn('SPARK_NODE_VERSION="${SPARK_NODE_VERSION:-22.18.0}"', script)
         self.assertIn("node-v$SPARK_NODE_VERSION-linux-x64.tar.xz", script)
