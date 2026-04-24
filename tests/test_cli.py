@@ -24,14 +24,17 @@ from spark_cli.cli import (
     delete_secret,
     fetch_secret,
     infer_module_name_from_url,
+    git_command,
     is_git_source,
     module_is_git_managed,
     normalize_git_url,
     pull_module_source,
+    remove_tree,
     install_module_record,
     keychain_env_for_module,
     list_stored_secrets,
     load_json,
+    long_path_aware,
     module_log_path,
     module_secret_env_bindings,
     check_runtime_version_for_module,
@@ -1006,6 +1009,30 @@ class SparkCliTests(unittest.TestCase):
                 self.assertTrue(ok)
                 self.assertTrue((cloned / "extra.txt").exists())
                 self.assertEqual(clone_target_for_module("git-demo"), clone_home / "modules" / "git-demo" / "source")
+
+    def test_git_command_enables_long_paths_for_registry_clones(self) -> None:
+        self.assertEqual(
+            git_command("clone", "--depth=1", "https://example.test/repo.git", "target"),
+            ["git", "-c", "core.longpaths=true", "clone", "--depth=1", "https://example.test/repo.git", "target"],
+        )
+
+    def test_long_path_aware_prefixes_windows_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = long_path_aware(Path(tmp_dir))
+        if os.name == "nt":
+            self.assertTrue(result.startswith("\\\\?\\"))
+        else:
+            self.assertFalse(result.startswith("\\\\?\\"))
+
+    def test_remove_tree_removes_readonly_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir) / "tree"
+            root.mkdir()
+            readonly = root / "readonly.txt"
+            readonly.write_text("locked", encoding="utf-8")
+            readonly.chmod(0o444)
+            remove_tree(root)
+            self.assertFalse(root.exists())
 
     def test_ensure_bundle_modules_available_calls_resolve_for_missing(self) -> None:
         existing = make_module("already-here", ["cap.x"])

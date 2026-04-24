@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -176,6 +177,10 @@ def clone_target_for_module(name: str) -> Path:
     return SPARK_HOME / "modules" / name / "source"
 
 
+def git_command(*args: str) -> list[str]:
+    return ["git", "-c", "core.longpaths=true", *args]
+
+
 def clone_module_source(name: str, source: str) -> Path:
     target = clone_target_for_module(name)
     if (target / "spark.toml").exists() and (target / ".git").exists():
@@ -187,7 +192,7 @@ def clone_module_source(name: str, source: str) -> Path:
         )
     url = normalize_git_url(source)
     result = subprocess.run(
-        ["git", "clone", "--depth=1", url, str(target)],
+        git_command("clone", "--depth=1", url, str(target)),
         capture_output=True,
         text=True,
     )
@@ -199,7 +204,7 @@ def clone_module_source(name: str, source: str) -> Path:
 
 def pull_module_source(path: Path) -> tuple[bool, str]:
     result = subprocess.run(
-        ["git", "-C", str(path), "pull", "--ff-only"],
+        git_command("-C", str(path), "pull", "--ff-only"),
         capture_output=True,
         text=True,
     )
@@ -213,11 +218,31 @@ def module_is_git_managed(module_path: Path) -> bool:
         return str(SPARK_HOME / "modules") in str(module_path)
 
 
+def long_path_aware(path: Path) -> str:
+    resolved = str(path.resolve())
+    if os.name == "nt" and not resolved.startswith("\\\\?\\"):
+        return f"\\\\?\\{resolved}"
+    return resolved
+
+
+def retry_remove_readonly(func: Any, path: str, _exc_info: Any) -> None:
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def remove_tree(path: Path) -> None:
+    target = long_path_aware(path)
+    try:
+        shutil.rmtree(target, onexc=retry_remove_readonly)
+    except TypeError:  # pragma: no cover - Python <3.12 fallback
+        shutil.rmtree(target, onerror=retry_remove_readonly)
+
+
 def remove_module_clone(name: str) -> None:
     module_home = SPARK_HOME / "modules" / name
     if not module_home.exists():
         return
-    shutil.rmtree(module_home, ignore_errors=True)
+    remove_tree(module_home)
 
 
 def ensure_state_dirs() -> None:
