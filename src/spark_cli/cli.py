@@ -482,8 +482,20 @@ def detect_claude_code() -> dict[str, Any]:
     return {"present": bool(path), "path": path}
 
 
-def detect_runtime_binary(name: str) -> dict[str, Any]:
+def resolve_runtime_binary(name: str) -> str | None:
     path = shutil.which(name)
+    if path:
+        return path
+    if name == "python":
+        current = Path(sys.executable)
+        if current.exists():
+            return str(current)
+        return shutil.which("python3")
+    return None
+
+
+def detect_runtime_binary(name: str) -> dict[str, Any]:
+    path = resolve_runtime_binary(name)
     if not path:
         return {"name": name, "present": False, "path": None, "version": None}
     try:
@@ -498,6 +510,33 @@ def detect_runtime_binary(name: str) -> dict[str, Any]:
     output = (result.stdout + result.stderr).strip().splitlines()
     version = output[0] if result.returncode == 0 and output else None
     return {"name": name, "present": True, "path": path, "version": version}
+
+
+def shell_command_env() -> dict[str, str]:
+    env = os.environ.copy()
+    if shutil.which("python", path=env.get("PATH")):
+        return env
+    python_path = resolve_runtime_binary("python")
+    if not python_path:
+        return env
+
+    shim_dir = STATE_DIR / "runtime-shims"
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        shim_path = shim_dir / "python.cmd"
+        shim_path.write_text(f'@"{python_path}" %*\n', encoding="utf-8")
+    else:
+        shim_path = shim_dir / "python"
+        if shim_path.exists() or shim_path.is_symlink():
+            try:
+                if shim_path.resolve() != Path(python_path).resolve():
+                    shim_path.unlink()
+            except OSError:
+                shim_path.unlink()
+        if not shim_path.exists():
+            shim_path.symlink_to(python_path)
+    env["PATH"] = str(shim_dir) + os.pathsep + env.get("PATH", "")
+    return env
 
 
 def parse_version_tuple(raw: str) -> tuple[int, ...] | None:
@@ -1537,6 +1576,7 @@ def run_shell(command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         shell=True,
         capture_output=True,
         text=True,
+        env=shell_command_env(),
     )
 
 

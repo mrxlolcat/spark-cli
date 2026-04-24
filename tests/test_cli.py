@@ -84,7 +84,9 @@ from spark_cli.cli import (
     print_install_summary,
     ready_timeout_seconds,
     required_runtimes_for_modules,
+    resolve_runtime_binary,
     run_setup_wizard,
+    shell_command_env,
     setup_is_interactive,
     wait_for_ready_check,
     resolve_bundle_names,
@@ -982,6 +984,23 @@ class SparkCliTests(unittest.TestCase):
         info = detect_runtime_binary("python")
         self.assertTrue(info["present"])
         self.assertIsNotNone(info["path"])
+
+    def test_detect_runtime_binary_falls_back_to_current_python(self) -> None:
+        with patch("spark_cli.cli.shutil.which", return_value=None):
+            path = resolve_runtime_binary("python")
+        self.assertIsNotNone(path)
+        self.assertTrue(Path(str(path)).exists())
+
+    def test_shell_command_env_adds_python_shim_when_python_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_dir = Path(tmp_dir) / "state"
+            with patch("spark_cli.cli.STATE_DIR", state_dir):
+                with patch.dict(os.environ, {"PATH": ""}, clear=False):
+                    env = shell_command_env()
+            shim_dir = state_dir / "runtime-shims"
+            self.assertEqual(env["PATH"].split(os.pathsep)[0], str(shim_dir))
+            shim_name = "python.cmd" if os.name == "nt" else "python"
+            self.assertTrue((shim_dir / shim_name).exists())
 
     def test_detect_runtime_binary_reports_absent_for_missing_tool(self) -> None:
         info = detect_runtime_binary("definitely-not-a-real-tool-xyz")
