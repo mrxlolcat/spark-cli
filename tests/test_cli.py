@@ -886,7 +886,7 @@ class SparkCliTests(unittest.TestCase):
             secret = ["telegram.bot_token=abc"]
             bot_token = None
             admin_telegram_ids = None
-            telegram_webhook_secret = None
+            telegram_relay_secret = None
 
         values = collect_secret_values(Args(), [module])
         self.assertEqual(values["telegram.bot_token"], "abc")
@@ -902,8 +902,7 @@ class SparkCliTests(unittest.TestCase):
 
         class Args:
             spawner_ui_url = "http://127.0.0.1:5173"
-            telegram_gateway_mode = "auto"
-            telegram_webhook_url = None
+            telegram_relay_secret = None
 
         envs = build_module_envs(
             Args(),
@@ -915,11 +914,16 @@ class SparkCliTests(unittest.TestCase):
             {
                 "telegram.bot_token": "abc",
                 "telegram.admin_ids": "123",
-                "telegram.webhook_secret": "secret",
+                "telegram.relay_secret": "relay_secret_abcdefghijklmnopqrstuvwxyz",
             },
         )
         self.assertEqual(envs["spark-telegram-bot"]["BOT_TOKEN"], "abc")
         self.assertNotIn("BOT_TOKEN", envs["spawner-ui"])
+        self.assertEqual(
+            envs["spark-telegram-bot"]["TELEGRAM_RELAY_SECRET"],
+            envs["spawner-ui"]["TELEGRAM_RELAY_SECRET"],
+        )
+        self.assertNotIn("TELEGRAM_WEBHOOK_SECRET", envs["spark-telegram-bot"])
 
     def test_build_module_envs_defaults_missing_spawner_ui_url(self) -> None:
         gateway = make_module("spark-telegram-bot", ["telegram.ingress"])
@@ -928,8 +932,7 @@ class SparkCliTests(unittest.TestCase):
 
         class Args:
             spawner_ui_url = None
-            telegram_gateway_mode = "auto"
-            telegram_webhook_url = None
+            telegram_relay_secret = None
 
         envs = build_module_envs(
             Args(),
@@ -944,7 +947,10 @@ class SparkCliTests(unittest.TestCase):
             },
         )
         self.assertEqual(envs["spark-telegram-bot"]["SPAWNER_UI_URL"], "http://127.0.0.1:5173")
+        self.assertEqual(envs["spark-telegram-bot"]["TELEGRAM_GATEWAY_MODE"], "polling")
         self.assertEqual(envs["spawner-ui"]["MISSION_CONTROL_WEBHOOK_URLS"], "http://127.0.0.1:8788/spawner-events")
+        self.assertIn("TELEGRAM_RELAY_SECRET", envs["spark-telegram-bot"])
+        self.assertEqual(envs["spark-telegram-bot"]["TELEGRAM_RELAY_SECRET"], envs["spawner-ui"]["TELEGRAM_RELAY_SECRET"])
         self.assertEqual(envs["spark-telegram-bot"]["LLM_PROVIDER"], "ollama")
         self.assertEqual(envs["spark-telegram-bot"]["OLLAMA_URL"], "http://localhost:11434")
         self.assertEqual(envs["spark-intelligence-builder"]["SPARK_LLM_PROVIDER"], "ollama")
@@ -956,8 +962,7 @@ class SparkCliTests(unittest.TestCase):
 
         class Args:
             spawner_ui_url = "http://127.0.0.1:5173"
-            telegram_gateway_mode = "polling"
-            telegram_webhook_url = None
+            telegram_relay_secret = None
             llm_provider = "zai"
             zai_base_url = "https://api.z.ai/api/coding/paas/v4/"
             zai_model = "glm-5.1"
@@ -1081,7 +1086,7 @@ class SparkCliTests(unittest.TestCase):
         requirements = {
             "telegram.bot_token": {"prompt": "Bot token", "required": True},
             "telegram.admin_ids": {"prompt": "Admin ids", "required": True},
-            "telegram.webhook_secret": {"prompt": "Webhook secret", "required": False},
+            "telegram.relay_secret": {"prompt": "Relay secret", "required": False},
         }
         existing = {"telegram.bot_token": "already-set"}
         prompted: list[str] = []
@@ -1090,7 +1095,7 @@ class SparkCliTests(unittest.TestCase):
             prompted.append(prompt)
             if "Admin ids" in prompt:
                 return "123,456"
-            if "Webhook secret" in prompt:
+            if "Relay secret" in prompt:
                 return ""
             return "SHOULD-NOT-HAPPEN"
 
@@ -1098,7 +1103,7 @@ class SparkCliTests(unittest.TestCase):
             collected = run_setup_wizard(existing, requirements)
         self.assertEqual(collected["telegram.bot_token"], "already-set")
         self.assertEqual(collected["telegram.admin_ids"], "123,456")
-        self.assertNotIn("telegram.webhook_secret", collected)
+        self.assertNotIn("telegram.relay_secret", collected)
         self.assertEqual(len(prompted), 2)
 
     def test_run_setup_wizard_reprompts_when_required_secret_empty(self) -> None:
@@ -1126,7 +1131,7 @@ class SparkCliTests(unittest.TestCase):
             secret = None
             bot_token = None
             admin_telegram_ids = None
-            telegram_webhook_secret = None
+            telegram_relay_secret = None
             non_interactive = False
 
         with patch("spark_cli.cli.getpass.getpass", return_value="prompted-value"):
@@ -1150,7 +1155,7 @@ class SparkCliTests(unittest.TestCase):
             secret = None
             bot_token = None
             admin_telegram_ids = None
-            telegram_webhook_secret = None
+            telegram_relay_secret = None
             non_interactive = True
 
         with self.assertRaises(SystemExit) as error:
@@ -1366,10 +1371,10 @@ class SparkCliTests(unittest.TestCase):
             path=Path("C:/tmp/spark-telegram-bot"),
             manifest={
                 "module": {"name": "spark-telegram-bot", "version": "1.0.0", "kind": "service", "plane": "ingress"},
-                "needs": {"secrets": ["telegram.bot_token", "telegram.webhook_secret"]},
+                "needs": {"secrets": ["telegram.bot_token", "telegram.relay_secret"]},
                 "secrets": {
                     "telegram_bot_token": {"env_var": "BOT_TOKEN", "storage": "keychain"},
-                    "telegram_webhook_secret": {"env_var": "TELEGRAM_WEBHOOK_SECRET", "storage": "keychain"},
+                    "telegram_relay_secret": {"env_var": "TELEGRAM_RELAY_SECRET", "storage": "keychain"},
                 },
             },
         )

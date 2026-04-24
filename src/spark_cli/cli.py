@@ -5,6 +5,7 @@ import getpass
 import json
 import os
 import re
+import secrets as py_secrets
 import shutil
 import stat
 import subprocess
@@ -437,7 +438,7 @@ def collect_secret_values(
     legacy_map = {
         "telegram.bot_token": getattr(args, "bot_token", None),
         "telegram.admin_ids": getattr(args, "admin_telegram_ids", None),
-        "telegram.webhook_secret": getattr(args, "telegram_webhook_secret", None),
+        "telegram.relay_secret": getattr(args, "telegram_relay_secret", None),
         "llm.zai.api_key": getattr(args, "zai_api_key", None),
         "llm.openai.api_key": getattr(args, "openai_api_key", None),
         "llm.anthropic.api_key": getattr(args, "anthropic_api_key", None),
@@ -834,6 +835,7 @@ def build_module_envs(args: argparse.Namespace, modules_by_name: dict[str, Modul
     spawner = modules_by_name["spawner-ui"]
     builder = modules_by_name["spark-intelligence-builder"]
     _, llm_env = build_llm_env(args, secret_values)
+    relay_secret = secret_values.get("telegram.relay_secret") or py_secrets.token_urlsafe(32)
 
     gateway_env = {
         "BOT_TOKEN": secret_values.get("telegram.bot_token", ""),
@@ -841,13 +843,10 @@ def build_module_envs(args: argparse.Namespace, modules_by_name: dict[str, Modul
         "SPARK_BUILDER_REPO": str(builder.path),
         "SPARK_BUILDER_BRIDGE_MODE": "auto",
         "SPAWNER_UI_URL": args.spawner_ui_url or "http://127.0.0.1:5173",
-        "TELEGRAM_GATEWAY_MODE": args.telegram_gateway_mode,
+        "TELEGRAM_GATEWAY_MODE": "polling",
+        "TELEGRAM_RELAY_SECRET": relay_secret,
     }
     gateway_env.update(llm_env)
-    if secret_values.get("telegram.webhook_secret"):
-        gateway_env["TELEGRAM_WEBHOOK_SECRET"] = secret_values["telegram.webhook_secret"]
-    if args.telegram_webhook_url:
-        gateway_env["TELEGRAM_WEBHOOK_URL"] = args.telegram_webhook_url
 
     relay_base = args.spawner_ui_url or "http://127.0.0.1:5173"
     if relay_base.endswith(":5173"):
@@ -857,8 +856,7 @@ def build_module_envs(args: argparse.Namespace, modules_by_name: dict[str, Modul
     }
     llm_metadata_env = non_secret_llm_env(llm_env)
     spawner_env.update({f"SPARK_{key}": value for key, value in llm_metadata_env.items()})
-    if secret_values.get("telegram.webhook_secret"):
-        spawner_env["TELEGRAM_RELAY_SECRET"] = secret_values["telegram.webhook_secret"]
+    spawner_env["TELEGRAM_RELAY_SECRET"] = relay_secret
 
     return {
         gateway.name: gateway_env,
@@ -2528,9 +2526,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--secret", action="append", help="Provide manifest secret values as key=value")
     setup_parser.add_argument("--bot-token")
     setup_parser.add_argument("--admin-telegram-ids")
-    setup_parser.add_argument("--telegram-gateway-mode", choices=["auto", "polling", "webhook"], default="auto")
-    setup_parser.add_argument("--telegram-webhook-url")
-    setup_parser.add_argument("--telegram-webhook-secret")
+    setup_parser.add_argument("--telegram-relay-secret")
     setup_parser.add_argument("--spawner-ui-url", default="http://127.0.0.1:5173")
     setup_parser.add_argument("--llm-provider", choices=sorted(LLM_PROVIDER_ENV), help="Default LLM gateway provider (default: ollama unless an API key flag selects a cloud provider)")
     setup_parser.add_argument("--zai-api-key", help="Z.AI / GLM coding endpoint API key")
