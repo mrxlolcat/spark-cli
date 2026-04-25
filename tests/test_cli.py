@@ -634,6 +634,26 @@ class SparkCliTests(unittest.TestCase):
         args = build_parser().parse_args(["setup", "--non-interactive"])
         self.assertEqual(args.bundle, "telegram-starter")
 
+    def test_setup_accepts_role_specific_llm_providers(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "setup",
+                "--non-interactive",
+                "--chat-llm-provider",
+                "zai",
+                "--builder-llm-provider",
+                "openai",
+                "--memory-llm-provider",
+                "ollama",
+                "--mission-llm-provider",
+                "anthropic",
+            ]
+        )
+        self.assertEqual(args.chat_llm_provider, "zai")
+        self.assertEqual(args.builder_llm_provider, "openai")
+        self.assertEqual(args.memory_llm_provider, "ollama")
+        self.assertEqual(args.mission_llm_provider, "anthropic")
+
     def test_autostart_install_defaults_to_telegram_starter_and_now_is_optional(self) -> None:
         args = build_parser().parse_args(["autostart", "install", "--now"])
         self.assertEqual(args.target, "telegram-starter")
@@ -796,7 +816,13 @@ class SparkCliTests(unittest.TestCase):
             self.assertEqual(args.func(args), 0)
         output = stdout.getvalue()
         self.assertIn("@BotFather", output)
-        self.assertIn("spark setup --llm-provider zai", output)
+        self.assertIn("Windows PowerShell/CMD", output)
+        self.assertIn("WSL Ubuntu shell", output)
+        self.assertIn("Pick LLM providers", output)
+        self.assertIn("chat: Telegram chat replies", output)
+        self.assertIn("spark setup --llm-provider openai", output)
+        self.assertIn("--chat-llm-provider openai", output)
+        self.assertIn("signed-in Codex CLI", output)
         self.assertIn("spark autostart install --now", output)
         self.assertIn("spark start telegram-starter", output)
         self.assertIn("/diagnose", output)
@@ -811,6 +837,11 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(payload["title"], "Spark starter guide")
         self.assertIn("starter_bundle", payload)
         self.assertIn("telegram_commands", payload)
+        self.assertIn("Windows PowerShell/CMD", payload["operating_systems"])
+        self.assertEqual(
+            [item["role"] for item in payload["setup"]["llm_roles"]],
+            ["chat", "builder", "memory", "mission"],
+        )
 
     def test_setup_default_bundle_registers_five_module_starter_stack(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -951,6 +982,8 @@ class SparkCliTests(unittest.TestCase):
             self.assertIn("spark start telegram-starter", setup_output)
             self.assertIn("/diagnose", setup_output)
             self.assertIn("Need a bot token? Open @BotFather", setup_output)
+            self.assertIn("LLM roles:", setup_output)
+            self.assertIn("chat: zai", setup_output)
             self.assertIn("Builder runtime: prepared Builder home", setup_output)
 
             expected = [
@@ -977,6 +1010,11 @@ class SparkCliTests(unittest.TestCase):
             self.assertEqual(setup_state["llm"]["provider"], "zai")
             self.assertEqual(setup_state["llm"]["model"], "glm-5.1")
             self.assertTrue(setup_state["llm"]["api_key_configured"])
+            self.assertEqual(setup_state["llm"]["auth_mode"], "api_key")
+            self.assertEqual(
+                {role: state["provider"] for role, state in setup_state["llm"]["roles"].items()},
+                {"chat": "zai", "builder": "zai", "memory": "zai", "mission": "zai"},
+            )
             expected_builder_home = state_dir / "spark-intelligence"
             self.assertEqual(setup_state["builder_home"], str(expected_builder_home))
             self.assertTrue(expected_builder_home.exists())
@@ -994,8 +1032,14 @@ class SparkCliTests(unittest.TestCase):
             self.assertNotIn("ZAI_API_KEY=zai-test-key", gateway_env)
             self.assertIn("ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4/", gateway_env)
             self.assertIn("ZAI_MODEL=glm-5.1", gateway_env)
+            self.assertIn("SPARK_CHAT_LLM_PROVIDER=zai", gateway_env)
+            self.assertIn("SPARK_BUILDER_LLM_PROVIDER=zai", gateway_env)
+            self.assertIn("SPARK_MEMORY_LLM_PROVIDER=zai", gateway_env)
+            self.assertIn("SPARK_MISSION_LLM_PROVIDER=zai", gateway_env)
             self.assertNotIn("BOT_TOKEN=", spawner_env)
             self.assertIn("SPARK_LLM_PROVIDER=zai", spawner_env)
+            self.assertIn("SPARK_CHAT_LLM_PROVIDER=zai", spawner_env)
+            self.assertNotIn("SPARK_SPARK_LLM_PROVIDER", spawner_env)
             self.assertNotIn("SPARK_ZAI_API_KEY", spawner_env)
             self.assertIn("MISSION_CONTROL_WEBHOOK_URLS=http://127.0.0.1:8788/spawner-events", spawner_env)
             self.assertIn("TELEGRAM_RELAY_SECRET=", spawner_env)
@@ -1243,7 +1287,12 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(envs["spark-telegram-bot"]["LLM_PROVIDER"], "ollama")
         self.assertEqual(envs["spark-telegram-bot"]["BOT_DEFAULT_PROVIDER"], "ollama")
         self.assertEqual(envs["spark-telegram-bot"]["OLLAMA_URL"], "http://localhost:11434")
+        self.assertEqual(envs["spark-telegram-bot"]["SPARK_CHAT_LLM_PROVIDER"], "ollama")
+        self.assertEqual(envs["spark-telegram-bot"]["SPARK_BUILDER_LLM_PROVIDER"], "ollama")
+        self.assertEqual(envs["spark-telegram-bot"]["SPARK_MEMORY_LLM_PROVIDER"], "ollama")
+        self.assertEqual(envs["spark-telegram-bot"]["SPARK_MISSION_LLM_PROVIDER"], "ollama")
         self.assertEqual(envs["spark-intelligence-builder"]["SPARK_LLM_PROVIDER"], "ollama")
+        self.assertNotIn("SPARK_SPARK_LLM_PROVIDER", envs["spark-intelligence-builder"])
 
     def test_build_module_envs_wires_zai_gateway_configuration(self) -> None:
         gateway = make_module("spark-telegram-bot", ["telegram.ingress"])
@@ -1276,9 +1325,64 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(gateway_env["BOT_DEFAULT_PROVIDER"], "zai")
         self.assertEqual(gateway_env["ZAI_API_KEY"], "zai-key")
         self.assertEqual(gateway_env["ZAI_MODEL"], "glm-5.1")
+        self.assertEqual(gateway_env["SPARK_CHAT_LLM_PROVIDER"], "zai")
+        self.assertEqual(gateway_env["SPARK_CHAT_LLM_AUTH_MODE"], "api_key")
         self.assertEqual(envs["spawner-ui"]["SPARK_ZAI_MODEL"], "glm-5.1")
+        self.assertEqual(envs["spawner-ui"]["SPARK_CHAT_LLM_PROVIDER"], "zai")
         self.assertNotIn("SPARK_ZAI_API_KEY", envs["spawner-ui"])
         self.assertNotIn("SPARK_ZAI_API_KEY", envs["spark-intelligence-builder"])
+
+    def test_build_module_envs_supports_role_specific_llm_providers(self) -> None:
+        gateway = make_module("spark-telegram-bot", ["telegram.ingress"])
+        builder = make_module("spark-intelligence-builder", ["spark.runtime"])
+        spawner = make_module("spawner-ui", ["mission.execution"])
+
+        class Args:
+            spawner_ui_url = "http://127.0.0.1:5173"
+            telegram_relay_secret = None
+            llm_provider = None
+            chat_llm_provider = "zai"
+            builder_llm_provider = "openai"
+            memory_llm_provider = "ollama"
+            mission_llm_provider = "openai"
+            zai_base_url = "https://api.z.ai/api/coding/paas/v4/"
+            zai_model = "glm-5.1"
+            openai_base_url = "https://api.openai.com/v1"
+            openai_model = "gpt-5.5"
+            ollama_url = "http://localhost:11434"
+            ollama_model = "llama3.1"
+
+        with patch("spark_cli.cli.detect_codex_cli", return_value={"present": True, "path": "/usr/local/bin/codex"}):
+            envs = build_module_envs(
+                Args(),
+                {
+                    gateway.name: gateway,
+                    builder.name: builder,
+                    spawner.name: spawner,
+                },
+                {
+                    "telegram.bot_token": "abc",
+                    "telegram.admin_ids": "123",
+                    "llm.zai.api_key": "zai-key",
+                },
+            )
+
+        gateway_env = envs["spark-telegram-bot"]
+        self.assertEqual(gateway_env["LLM_PROVIDER"], "zai")
+        self.assertEqual(gateway_env["BOT_DEFAULT_PROVIDER"], "zai")
+        self.assertEqual(gateway_env["SPARK_CHAT_LLM_PROVIDER"], "zai")
+        self.assertEqual(gateway_env["SPARK_CHAT_LLM_AUTH_MODE"], "api_key")
+        self.assertEqual(gateway_env["SPARK_BUILDER_LLM_PROVIDER"], "openai")
+        self.assertEqual(gateway_env["SPARK_BUILDER_LLM_MODEL"], "gpt-5.5")
+        self.assertEqual(gateway_env["SPARK_BUILDER_LLM_AUTH_MODE"], "codex_oauth")
+        self.assertEqual(gateway_env["SPARK_MEMORY_LLM_PROVIDER"], "ollama")
+        self.assertEqual(gateway_env["SPARK_MEMORY_LLM_AUTH_MODE"], "local")
+        self.assertEqual(gateway_env["SPARK_MISSION_LLM_PROVIDER"], "openai")
+        self.assertEqual(envs["spawner-ui"]["SPARK_BUILDER_LLM_PROVIDER"], "openai")
+        self.assertEqual(envs["spark-intelligence-builder"]["SPARK_MEMORY_LLM_PROVIDER"], "ollama")
+        self.assertNotIn("SPARK_ZAI_API_KEY", envs["spawner-ui"])
+        self.assertNotIn("SPARK_OPENAI_API_KEY", envs["spawner-ui"])
+        self.assertNotIn("SPARK_SPARK_LLM_PROVIDER", envs["spawner-ui"])
 
     def test_pid_is_running_detects_current_process(self) -> None:
         self.assertTrue(pid_is_running(os.getpid()))
@@ -1527,7 +1631,7 @@ class SparkCliTests(unittest.TestCase):
 
     def test_stop_module_terminates_posix_process_group(self) -> None:
         with patch("spark_cli.cli.os.name", "posix"), \
-             patch("spark_cli.cli.os.killpg") as killpg, \
+             patch("spark_cli.cli.os.killpg", create=True) as killpg, \
              patch("spark_cli.cli.subprocess.run") as run, \
              patch("sys.stdout", new_callable=StringIO):
             stop_module("spawner-ui", 12345)
@@ -1537,7 +1641,7 @@ class SparkCliTests(unittest.TestCase):
 
     def test_stop_module_falls_back_to_single_posix_pid(self) -> None:
         with patch("spark_cli.cli.os.name", "posix"), \
-             patch("spark_cli.cli.os.killpg", side_effect=ProcessLookupError()), \
+             patch("spark_cli.cli.os.killpg", side_effect=ProcessLookupError(), create=True), \
              patch("spark_cli.cli.subprocess.run") as run, \
              patch("sys.stdout", new_callable=StringIO):
             stop_module("spawner-ui", 12345)
@@ -2116,7 +2220,7 @@ class SparkCliTests(unittest.TestCase):
         )
         self.assertIn("spark-telegram-bot is missing dependencies: spark-intelligence-builder.", hints)
         self.assertIn(
-            "No LLM provider is configured. Run `spark setup --llm-provider zai --zai-api-key <key>` or choose another provider.",
+            "No LLM provider is configured. Run `spark setup` to choose chat, builder, memory, and mission providers.",
             hints,
         )
 
@@ -2127,6 +2231,25 @@ class SparkCliTests(unittest.TestCase):
             {"llm": {"provider": "zai", "api_key_configured": False}},
         )
         self.assertIn("LLM provider `zai` is missing an API key. Re-run `spark setup --llm-provider zai --zai-api-key <key>`.", hints)
+
+    def test_build_status_repair_hints_allows_openai_codex_auth(self) -> None:
+        hints = build_status_repair_hints(
+            {},
+            [],
+            {"llm": {"provider": "openai", "api_key_configured": False, "auth_mode": "codex_oauth"}},
+        )
+        self.assertEqual([], [hint for hint in hints if "OpenAI is selected" in hint or "missing an API key" in hint])
+
+    def test_build_status_repair_hints_reports_openai_without_auth(self) -> None:
+        hints = build_status_repair_hints(
+            {},
+            [],
+            {"llm": {"provider": "openai", "api_key_configured": False, "auth_mode": "not_configured"}},
+        )
+        self.assertIn(
+            "OpenAI is selected but neither Codex CLI OAuth nor OPENAI_API_KEY is configured. Run `codex` to sign in with ChatGPT, or rerun `spark setup --llm-provider openai --openai-api-key <key>`.",
+            hints,
+        )
 
     def test_update_setup_state_after_uninstall_clears_empty_setup(self) -> None:
         original = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else None

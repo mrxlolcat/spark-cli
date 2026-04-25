@@ -103,7 +103,7 @@ bash ./install.sh \
   --setup-arg "$TELEGRAM_ADMIN_IDS"
 ```
 
-To wire a cloud LLM during setup, pass the provider and key. For the Z.AI GLM coding endpoint:
+To wire LLMs during setup, pick either one default provider or role-specific providers. Spark supports the same onboarding shape on Windows, macOS, Linux, and WSL:
 
 ```bash
 bash ./install.sh \
@@ -113,10 +113,29 @@ bash ./install.sh \
   --setup-arg --admin-telegram-ids \
   --setup-arg "$TELEGRAM_ADMIN_IDS" \
   --setup-arg --llm-provider \
-  --setup-arg zai \
-  --setup-arg --zai-api-key \
-  --setup-arg "$ZAI_API_KEY"
+  --setup-arg openai
 ```
+
+Provider options:
+
+| Provider | Good first path | Key-based path |
+|---|---|---|
+| OpenAI | Sign in with `codex`, then run `spark setup --llm-provider openai` | `spark setup --llm-provider openai --openai-api-key <OPENAI_API_KEY>` |
+| Anthropic | Sign in with `claude`, then run `spark setup --llm-provider anthropic` | `spark setup --llm-provider anthropic --anthropic-api-key <ANTHROPIC_API_KEY>` |
+| Z.AI / GLM | Use the coding endpoint key | `spark setup --llm-provider zai --zai-api-key <ZAI_API_KEY>` |
+| Ollama | Start Ollama locally | `spark setup --llm-provider ollama --ollama-url http://localhost:11434 --ollama-model <MODEL>` |
+
+For more control, set separate providers for Spark's roles:
+
+```bash
+spark setup \
+  --chat-llm-provider openai \
+  --builder-llm-provider openai \
+  --memory-llm-provider ollama \
+  --mission-llm-provider openai
+```
+
+`--llm-provider` remains the simple default for all roles. The role-specific flags override it when you want, for example, a local model for memory and a stronger cloud model for Builder or mission work.
 
 ## Default Starter Bundle
 
@@ -141,9 +160,9 @@ Setup writes the shared env that makes the pieces talk to each other:
 - Telegram and Spawner both get a generated `TELEGRAM_RELAY_SECRET`.
 - Telegram and Spawner share the mission relay URL.
 - Telegram receives `SPARK_BUILDER_HOME`, `SPARK_BUILDER_REPO`, and `SPARK_BUILDER_BRIDGE_MODE=required`, so memory commands go through Builder instead of a local no-op adapter.
-- Telegram, Spawner, and Builder get selected non-secret LLM provider metadata.
+- Telegram, Spawner, and Builder get selected non-secret LLM provider metadata for chat, builder, memory, and mission roles.
 - Builder is initialized with memory enabled, `shadow_mode=false`, `domain-chip-memory` active, and `spark-researcher` connected.
-- Cloud API keys are stored through Spark's secret backend.
+- Cloud API keys are stored through Spark's secret backend and are not written into generated module env files. OpenAI can also use a signed-in Codex CLI, and Anthropic can use Claude Code, when those CLIs are installed and signed in.
 
 The older dashboard/resonance API is intentionally not part of the launch starter path. Fresh installs should not require `SPARK_API_URL`, `SPARK_DASHBOARD_URL`, or a local service on port `8787`.
 
@@ -179,7 +198,7 @@ If you are an LLM agent installing Spark for a user:
 
 1. Prefer the official site/script path the user gives you, or clone `spark-cli` directly if developing locally.
 2. Run `spark setup` first; do not install the five core repos one by one unless debugging.
-3. Use `spark status --json` before declaring the install healthy.
+3. Use `spark status --json` before declaring the install healthy, and check that the LLM role summary matches the user's intended chat, builder, memory, and mission providers.
 4. Never print or commit bot tokens, provider API keys, `.env`, `.env.*`, or `~/.spark/config/secrets.local.json`.
 5. Confirm Telegram's generated env points at Builder with `SPARK_BUILDER_HOME`, and confirm Builder has memory enabled with `domain-chip-memory` active.
 6. If `/remember` replies with `Working Memory`, generic memory text, or a false success while recall fails, rerun `spark setup`, restart `spark-telegram-bot`, then inspect Builder memory state before editing bot code. The launch starter should fail visibly if Builder is unreachable, not silently fall back.

@@ -500,6 +500,11 @@ def detect_claude_code() -> dict[str, Any]:
     return {"present": bool(path), "path": path}
 
 
+def detect_codex_cli() -> dict[str, Any]:
+    path = shutil.which("codex")
+    return {"present": bool(path), "path": path}
+
+
 def resolve_runtime_binary(name: str) -> str | None:
     path = shutil.which(name)
     if path:
@@ -700,7 +705,12 @@ def print_setup_preflight(bundle: list[Module]) -> None:
     if cc["present"]:
         print(f"  [OK]   claude (Claude Code) detected at {cc['path']}")
     else:
-        print("  [miss] claude (Claude Code) not on PATH -- install for OAuth-based LLM calls")
+        print("  [miss] claude (Claude Code) not on PATH -- install for Claude subscription/OAuth-style calls")
+    codex = detect_codex_cli()
+    if codex["present"]:
+        print(f"  [OK]   codex (OpenAI/Codex CLI) detected at {codex['path']}")
+    else:
+        print("  [miss] codex not on PATH -- install/sign in for OpenAI ChatGPT/Codex OAuth-style calls")
     for runtime_name in required_runtimes_for_modules(bundle):
         info = detect_runtime_binary(runtime_name)
         if info["present"]:
@@ -834,6 +844,8 @@ LLM_PROVIDER_ENV: dict[str, dict[str, str]] = {
     },
 }
 
+LLM_ROLES = ("chat", "builder", "memory", "mission")
+
 
 def resolve_llm_provider(args: argparse.Namespace, secret_values: dict[str, str]) -> str:
     requested = getattr(args, "llm_provider", None)
@@ -846,8 +858,31 @@ def resolve_llm_provider(args: argparse.Namespace, secret_values: dict[str, str]
     return "ollama"
 
 
+def resolve_llm_roles(args: argparse.Namespace, secret_values: dict[str, str]) -> dict[str, str]:
+    default_provider = resolve_llm_provider(args, secret_values)
+    roles: dict[str, str] = {}
+    for role in LLM_ROLES:
+        roles[role] = str(getattr(args, f"{role}_llm_provider", None) or default_provider)
+    return roles
+
+
+def provider_auth_mode(provider: str, env: dict[str, str]) -> str:
+    spec = LLM_PROVIDER_ENV[provider]
+    api_key_env = spec.get("api_key_env")
+    if api_key_env and env.get(api_key_env):
+        return "api_key"
+    if provider == "openai" and detect_codex_cli()["present"]:
+        return "codex_oauth"
+    if provider == "anthropic" and detect_claude_code()["present"]:
+        return "claude_oauth"
+    if provider == "ollama":
+        return "local"
+    return "not_configured"
+
+
 def build_llm_env(args: argparse.Namespace, secret_values: dict[str, str]) -> tuple[str, dict[str, str]]:
-    provider = resolve_llm_provider(args, secret_values)
+    roles = resolve_llm_roles(args, secret_values)
+    provider = roles["chat"]
     spec = LLM_PROVIDER_ENV[provider]
     env: dict[str, str] = {
         "LLM_PROVIDER": provider,
@@ -855,15 +890,27 @@ def build_llm_env(args: argparse.Namespace, secret_values: dict[str, str]) -> tu
         "BOT_DEFAULT_PROVIDER": spec["bot_provider"],
     }
 
-    api_key_secret = spec.get("api_key_secret")
-    api_key_env = spec.get("api_key_env")
-    if api_key_secret and api_key_env and secret_values.get(api_key_secret):
-        env[api_key_env] = secret_values[api_key_secret]
+    for provider_name, provider_spec in LLM_PROVIDER_ENV.items():
+        api_key_secret = provider_spec.get("api_key_secret")
+        api_key_env = provider_spec.get("api_key_env")
+        if api_key_secret and api_key_env and secret_values.get(api_key_secret):
+            env[api_key_env] = secret_values[api_key_secret]
 
-    base_url = getattr(args, spec["base_url_arg"], None) or spec["base_url_default"]
-    model = getattr(args, spec["model_arg"], None) or spec["model_default"]
-    env[spec["base_url_env"]] = str(base_url)
-    env[spec["model_env"]] = str(model)
+    for provider_name in sorted(set(roles.values())):
+        provider_spec = LLM_PROVIDER_ENV[provider_name]
+        base_url = getattr(args, provider_spec["base_url_arg"], None) or provider_spec["base_url_default"]
+        model = getattr(args, provider_spec["model_arg"], None) or provider_spec["model_default"]
+        env[provider_spec["base_url_env"]] = str(base_url)
+        env[provider_spec["model_env"]] = str(model)
+
+    for role, role_provider in roles.items():
+        role_spec = LLM_PROVIDER_ENV[role_provider]
+        role_prefix = f"SPARK_{role.upper()}_LLM"
+        env[f"{role_prefix}_PROVIDER"] = role_provider
+        env[f"{role_prefix}_BOT_PROVIDER"] = role_spec["bot_provider"]
+        env[f"{role_prefix}_MODEL"] = env.get(role_spec["model_env"], role_spec["model_default"])
+        env[f"{role_prefix}_BASE_URL"] = env.get(role_spec["base_url_env"], role_spec["base_url_default"])
+        env[f"{role_prefix}_AUTH_MODE"] = provider_auth_mode(role_provider, env)
     return provider, env
 
 
@@ -875,9 +922,27 @@ def non_secret_llm_env(llm_env: dict[str, str]) -> dict[str, str]:
     }
 
 
+def spark_prefixed_metadata_env(llm_env: dict[str, str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in non_secret_llm_env(llm_env).items():
+        result[key if key.startswith("SPARK_") else f"SPARK_{key}"] = value
+    return result
+
+
 def llm_setup_state(provider: str, env: dict[str, str]) -> dict[str, Any]:
     spec = LLM_PROVIDER_ENV[provider]
     api_key_env = spec.get("api_key_env")
+    roles: dict[str, dict[str, Any]] = {}
+    for role in LLM_ROLES:
+        role_provider = env.get(f"SPARK_{role.upper()}_LLM_PROVIDER", provider)
+        role_model = env.get(f"SPARK_{role.upper()}_LLM_MODEL", "")
+        role_auth = env.get(f"SPARK_{role.upper()}_LLM_AUTH_MODE", "not_configured")
+        roles[role] = {
+            "provider": role_provider,
+            "bot_provider": LLM_PROVIDER_ENV[str(role_provider)]["bot_provider"],
+            "model": role_model,
+            "auth_mode": role_auth,
+        }
     return {
         "provider": provider,
         "bot_default_provider": spec["bot_provider"],
@@ -886,6 +951,8 @@ def llm_setup_state(provider: str, env: dict[str, str]) -> dict[str, Any]:
         "model": env.get(spec["model_env"], ""),
         "api_key_env": api_key_env,
         "api_key_configured": bool(api_key_env and env.get(api_key_env)),
+        "auth_mode": provider_auth_mode(provider, env),
+        "roles": roles,
     }
 
 
@@ -918,13 +985,13 @@ def build_module_envs(args: argparse.Namespace, modules_by_name: dict[str, Modul
     spawner_env = {
         "MISSION_CONTROL_WEBHOOK_URLS": f"{relay_base}/spawner-events",
     }
-    llm_metadata_env = non_secret_llm_env(llm_env)
-    spawner_env.update({f"SPARK_{key}": value for key, value in llm_metadata_env.items()})
+    llm_metadata_env = spark_prefixed_metadata_env(llm_env)
+    spawner_env.update(llm_metadata_env)
     spawner_env["TELEGRAM_RELAY_SECRET"] = relay_secret
 
     builder_env = {
         "SPARK_INTELLIGENCE_HOME": str(builder_home),
-        **{f"SPARK_{key}": value for key, value in llm_metadata_env.items()},
+        **llm_metadata_env,
     }
     if researcher is not None:
         builder_env["SPARK_RESEARCHER_ROOT"] = str(researcher.path)
@@ -1624,16 +1691,17 @@ def build_status_repair_hints(
     llm_state = setup_state.get("llm")
     if not isinstance(llm_state, dict) or not llm_state.get("provider"):
         hints.append(
-            "No LLM provider is configured. Run `spark setup --llm-provider zai --zai-api-key <key>` or choose another provider."
+            "No LLM provider is configured. Run `spark setup` to choose chat, builder, memory, and mission providers."
         )
-    elif llm_state.get("provider") in {"zai", "openai", "anthropic"} and not llm_state.get("api_key_configured"):
+    elif llm_state.get("provider") in {"zai", "anthropic"} and not llm_state.get("api_key_configured"):
         provider = llm_state["provider"]
         flag = {
             "zai": "--zai-api-key",
-            "openai": "--openai-api-key",
             "anthropic": "--anthropic-api-key",
         }[str(provider)]
         hints.append(f"LLM provider `{provider}` is missing an API key. Re-run `spark setup --llm-provider {provider} {flag} <key>`.")
+    elif llm_state.get("provider") == "openai" and llm_state.get("auth_mode") == "not_configured":
+        hints.append("OpenAI is selected but neither Codex CLI OAuth nor OPENAI_API_KEY is configured. Run `codex` to sign in with ChatGPT, or rerun `spark setup --llm-provider openai --openai-api-key <key>`.")
     module_results_by_name = {item["name"]: item for item in module_results}
     for module in modules.values():
         missing_dependencies, unhealthy_dependencies = dependency_issues_for_module(module, module_results_by_name)
@@ -1736,6 +1804,7 @@ def run_install_commands_with_progress(
 def print_setup_next_steps(bundle_name: str, ingress_owner: Module, llm_state: dict[str, Any]) -> None:
     provider = llm_state.get("provider") or "unknown"
     model = llm_state.get("model") or "not configured"
+    roles = llm_state.get("roles") if isinstance(llm_state.get("roles"), dict) else {}
     print("")
     print("Next steps:")
     print("  1. Verify the install:")
@@ -1751,9 +1820,18 @@ def print_setup_next_steps(bundle_name: str, ingress_owner: Module, llm_state: d
     print("  5. Send a normal message and confirm the LLM responds.")
     print("")
     print(f"LLM provider: {provider} ({model})")
+    if roles:
+        print("LLM roles:")
+        for role in LLM_ROLES:
+            role_state = roles.get(role, {})
+            print(
+                f"  - {role}: {role_state.get('provider', provider)} "
+                f"({role_state.get('model', model)}, auth={role_state.get('auth_mode', llm_state.get('auth_mode', 'unknown'))})"
+            )
     print("Need a bot token? Open @BotFather in Telegram, run /newbot, then rerun:")
     print(f"     spark setup {bundle_name}")
-    print("Need to change LLMs? Rerun setup with --llm-provider openai|anthropic|zai|ollama.")
+    print("Need to change LLMs? Rerun setup with --chat-llm-provider, --builder-llm-provider, --memory-llm-provider, or --mission-llm-provider.")
+    print("OpenAI can use an OPENAI_API_KEY or a signed-in Codex CLI (`codex`); Anthropic can use an API key or Claude Code (`claude`).")
     print("Need to turn the agent off? Run `spark stop telegram-starter` or `spark autostart uninstall`.")
     print("Run `spark guide` anytime for BotFather, LLM, module, and Telegram command help.")
 
@@ -1976,6 +2054,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     if isinstance(llm_state, dict) and llm_state.get("provider"):
         model = llm_state.get("model") or "default"
         print(f"LLM provider: {llm_state['provider']} ({model})")
+        roles = llm_state.get("roles")
+        if isinstance(roles, dict):
+            role_summary = ", ".join(
+                f"{role}={roles.get(role, {}).get('provider', llm_state['provider'])}"
+                for role in LLM_ROLES
+            )
+            print(f"LLM roles: {role_summary}")
     for hint in payload.get("repair_hints", []):
         print(f"Repair: {hint}")
     print("")
@@ -3062,7 +3147,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 def onboarding_guide_payload() -> dict[str, Any]:
     return {
         "title": "Spark starter guide",
-        "goal": "Install once, configure one Telegram bot and one LLM provider, then talk to Spark from Telegram.",
+        "goal": "Install once, configure one Telegram bot, choose LLM providers by role, then talk to Spark from Telegram.",
+        "operating_systems": ["Windows PowerShell/CMD", "macOS Terminal", "Linux shell", "WSL Ubuntu shell"],
         "starter_bundle": [
             {
                 "module": "spark-telegram-bot",
@@ -3094,12 +3180,22 @@ def onboarding_guide_payload() -> dict[str, Any]:
                 "Start your new bot, send /myid, and copy your numeric Telegram id.",
                 "Run spark setup again with the bot token and admin id if you did not provide them during install.",
             ],
-            "llm_examples": [
-                "spark setup --llm-provider zai --zai-api-key <ZAI_API_KEY>",
-                "spark setup --llm-provider openai --openai-api-key <OPENAI_API_KEY> --openai-model gpt-5.5",
-                "spark setup --llm-provider anthropic --anthropic-api-key <ANTHROPIC_API_KEY>",
-                "spark setup --llm-provider ollama --ollama-url http://localhost:11434 --ollama-model kimi-k2.5:cloud",
+            "llm_roles": [
+                {"role": "chat", "use": "Telegram chat replies and normal conversation."},
+                {"role": "builder", "use": "Builder reasoning, orchestration, and Spark runtime decisions."},
+                {"role": "memory", "use": "Memory synthesis, recall shaping, and domain-chip memory work."},
+                {"role": "mission", "use": "Spawner missions, coding/build work, and execution tasks."},
             ],
+            "llm_examples": [
+                "spark setup --llm-provider openai",
+                "spark setup --llm-provider openai --openai-api-key <OPENAI_API_KEY> --openai-model gpt-5.5",
+                "spark setup --llm-provider anthropic",
+                "spark setup --llm-provider anthropic --anthropic-api-key <ANTHROPIC_API_KEY>",
+                "spark setup --llm-provider zai --zai-api-key <ZAI_API_KEY>",
+                "spark setup --llm-provider ollama --ollama-url http://localhost:11434 --ollama-model <MODEL>",
+                "spark setup --chat-llm-provider openai --builder-llm-provider openai --memory-llm-provider ollama --mission-llm-provider openai",
+            ],
+            "llm_auth_note": "OpenAI can use a signed-in Codex CLI or OPENAI_API_KEY. Anthropic can use Claude Code or ANTHROPIC_API_KEY. Z.AI uses ZAI_API_KEY. Ollama is local.",
         },
         "start": [
             "spark status",
@@ -3130,7 +3226,7 @@ def onboarding_guide_payload() -> dict[str, Any]:
         "troubleshooting": [
             "Bot receives no messages: make sure only one polling process is running, then restart spark-telegram-bot.",
             "Bot says admin only: send /myid, add that numeric id during spark setup, then restart.",
-            "LLM does not answer: rerun spark setup with a provider/key, then run spark status.",
+            "LLM does not answer: rerun spark setup with providers for chat, builder, memory, and mission, then run spark status.",
             "/run fails: start spawner-ui and check spark logs spawner-ui.",
             "Memory does not work: run spark status and repair Builder/domain-chip-memory hints first.",
         ],
@@ -3145,12 +3241,16 @@ def cmd_guide(args: argparse.Namespace) -> int:
 
     print(payload["title"])
     print(payload["goal"])
+    print("Works on: " + ", ".join(payload["operating_systems"]))
     print("")
     print("1. Set up Telegram")
     for step in payload["setup"]["botfather"]:
         print(f"   - {step}")
     print("")
-    print("2. Pick one LLM provider")
+    print("2. Pick LLM providers")
+    for item in payload["setup"]["llm_roles"]:
+        print(f"   - {item['role']}: {item['use']}")
+    print(f"   {payload['setup']['llm_auth_note']}")
     for command in payload["setup"]["llm_examples"]:
         print(f"   {command}")
     print("")
@@ -3213,7 +3313,11 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--admin-telegram-ids")
     setup_parser.add_argument("--telegram-relay-secret")
     setup_parser.add_argument("--spawner-ui-url", default="http://127.0.0.1:5173")
-    setup_parser.add_argument("--llm-provider", choices=sorted(LLM_PROVIDER_ENV), help="Default LLM gateway provider (default: ollama unless an API key flag selects a cloud provider)")
+    setup_parser.add_argument("--llm-provider", choices=sorted(LLM_PROVIDER_ENV), help="Default provider for all Spark LLM roles unless a role-specific provider is set")
+    setup_parser.add_argument("--chat-llm-provider", choices=sorted(LLM_PROVIDER_ENV), help="Provider for Telegram chat replies")
+    setup_parser.add_argument("--builder-llm-provider", choices=sorted(LLM_PROVIDER_ENV), help="Provider for Builder reasoning and orchestration")
+    setup_parser.add_argument("--memory-llm-provider", choices=sorted(LLM_PROVIDER_ENV), help="Provider for memory synthesis and recall")
+    setup_parser.add_argument("--mission-llm-provider", choices=sorted(LLM_PROVIDER_ENV), help="Provider for Spawner missions and coding/build work")
     setup_parser.add_argument("--zai-api-key", help="Z.AI / GLM coding endpoint API key")
     setup_parser.add_argument("--zai-base-url", default="https://api.z.ai/api/coding/paas/v4/")
     setup_parser.add_argument("--zai-model", default="glm-5.1")
