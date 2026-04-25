@@ -3051,7 +3051,15 @@ def wait_for_ready_check(module: Module, process: subprocess.Popen[Any] | None =
         else:
             result = run_shell(ready_check, module.path, env=module_runtime_env(module), timeout=timeout_seconds)
             if result.returncode == 0:
-                return True, summarize_command_output(result)
+                detail = summarize_command_output(result)
+                if process is not None:
+                    stable_until = time.time() + min(8, timeout_seconds)
+                    while time.time() < stable_until:
+                        exit_code = process.poll()
+                        if exit_code is not None:
+                            return False, f"{detail.rstrip('.')}. Process exited with code {exit_code}"
+                        time.sleep(0.5)
+                return True, detail
             last_error = summarize_command_output(result)
         time.sleep(1)
     if ready_check.startswith(("http://", "https://")):

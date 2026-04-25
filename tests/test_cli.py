@@ -1495,6 +1495,39 @@ class SparkCliTests(unittest.TestCase):
             self.assertTrue(ready)
             self.assertEqual(detail, "ready")
 
+    def test_wait_for_ready_check_watches_process_after_shell_ready_passes(self) -> None:
+        module = Module(
+            name="telegram-target",
+            path=Path("C:/tmp/telegram-target"),
+            manifest={
+                "module": {"name": "telegram-target", "version": "0.1.0", "kind": "service", "plane": "ingress"},
+                "run": {"default": {"ready_check": "npm run health:polling"}},
+                "healthcheck": {"timeout_seconds": 20},
+            },
+        )
+
+        class EventuallyExitedProcess:
+            def __init__(self) -> None:
+                self.polls = 0
+
+            def poll(self) -> int | None:
+                self.polls += 1
+                if self.polls >= 3:
+                    return 1
+                return None
+
+        completed = subprocess.CompletedProcess("npm run health:polling", 0, stdout="Relay auth: configured", stderr="")
+
+        with patch("spark_cli.cli.module_runtime_env", return_value={}), \
+             patch("spark_cli.cli.run_shell", return_value=completed), \
+             patch("spark_cli.cli.time.time", side_effect=[100.0, 100.5, 101.0, 102.0, 103.0]), \
+             patch("spark_cli.cli.time.sleep", return_value=None):
+            ready, detail = wait_for_ready_check(module, process=EventuallyExitedProcess())  # type: ignore[arg-type]
+
+        self.assertFalse(ready)
+        self.assertIn("Relay auth: configured", detail)
+        self.assertIn("Process exited with code 1", detail)
+
     def test_wait_for_ready_check_describes_http_timeout(self) -> None:
         module = Module(
             name="http-target",
