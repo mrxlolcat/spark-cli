@@ -1738,6 +1738,9 @@ def build_module_repair_hints(
     setup_state: dict[str, Any],
 ) -> list[str]:
     hints: list[str] = []
+    runtime_ok, runtime_detail = check_runtime_version_for_module(module)
+    if not runtime_ok and runtime_detail:
+        hints.append(f"Repair runtime first: {runtime_detail}. If you used install.sh, run Spark through the installed wrapper at `{SPARK_HOME / 'bin' / ('spark.cmd' if os.name == 'nt' else 'spark')}` so managed Node/Python are on PATH.")
     missing_dependencies, unhealthy_dependencies = dependency_issues_for_module(module, module_results)
     if missing_dependencies:
         hints.append(

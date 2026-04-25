@@ -2304,6 +2304,21 @@ class SparkCliTests(unittest.TestCase):
             self.assertIn("Run the module doctor.", hints)
             self.assertIn("Run `spark setup telegram-starter` to regenerate installer-owned config.", hints)
 
+    def test_build_module_repair_hints_reports_runtime_version_mismatch(self) -> None:
+        module = Module(
+            name="spawner-ui",
+            path=Path("C:/tmp/spawner-ui"),
+            manifest={
+                "module": {"name": "spawner-ui", "version": "0.0.1", "kind": "app", "plane": "execution"},
+                "runtime": {"kind": "node", "version": ">=22"},
+            },
+        )
+        result = {"name": "spawner-ui", "healthy": False}
+        with patch("spark_cli.cli.detect_runtime_binary", return_value={"present": True, "version": "v18.19.1", "path": "/usr/bin/node"}):
+            hints = build_module_repair_hints(module, result, {"spawner-ui": result}, {})
+        self.assertTrue(any("Repair runtime first:" in hint and "node >=22 not satisfied" in hint for hint in hints))
+        self.assertTrue(any("installed wrapper" in hint for hint in hints))
+
     def test_build_status_repair_hints_reports_missing_ingress_owner_and_unhealthy_dependency(self) -> None:
         builder = Module(
             name="spark-intelligence-builder",
