@@ -17,6 +17,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as xml_escape
 
 import tomllib
 
@@ -36,6 +37,9 @@ USER_CONFIG_PATH = CONFIG_DIR / "config.json"
 SECRETS_INDEX_PATH = CONFIG_DIR / "secrets_index.json"
 SECRETS_FILE_PATH = CONFIG_DIR / "secrets.local.json"
 KEYCHAIN_SERVICE = "spark-cli"
+AUTOSTART_SERVICE_NAME = "spark-telegram-agent"
+AUTOSTART_LAUNCHD_LABEL = "ai.sparkswarm.spark-telegram-agent"
+AUTOSTART_WINDOWS_TASK_NAME = "Spark Telegram Agent"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_REGISTRY_PATH = REPO_ROOT / "registry.json"
 
@@ -1711,10 +1715,10 @@ def print_setup_next_steps(bundle_name: str, ingress_owner: Module, llm_state: d
     print("Next steps:")
     print("  1. Verify the install:")
     print("     spark status")
-    print("  2. Start the local execution plane:")
-    print("     spark start spawner-ui")
-    print("  3. Start Telegram long polling:")
-    print(f"     spark start {ingress_owner.name}")
+    print("  2. Make Spark start when this computer logs in:")
+    print("     spark autostart install --now")
+    print("  3. Manual start fallback:")
+    print("     spark start telegram-starter")
     print("  4. Open your Telegram bot and send:")
     print("     /start")
     print("     /myid")
@@ -1725,6 +1729,7 @@ def print_setup_next_steps(bundle_name: str, ingress_owner: Module, llm_state: d
     print("Need a bot token? Open @BotFather in Telegram, run /newbot, then rerun:")
     print(f"     spark setup {bundle_name}")
     print("Need to change LLMs? Rerun setup with --llm-provider openai|anthropic|zai|ollama.")
+    print("Need to turn the agent off? Run `spark stop telegram-starter` or `spark autostart uninstall`.")
     print("Run `spark guide` anytime for BotFather, LLM, module, and Telegram command help.")
 
 
@@ -2231,6 +2236,282 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def spark_invocation_args() -> list[str]:
+    argv0 = Path(str(sys.argv[0])).expanduser()
+    if argv0.exists() and argv0.suffix.lower() not in {".py", ".pyc"}:
+        return [str(argv0.resolve())]
+    found = shutil.which("spark")
+    if found:
+        return [found]
+    return [sys.executable, "-m", "spark_cli.cli"]
+
+
+def shell_join(args: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline([str(arg) for arg in args])
+    return " ".join(shlex.quote(str(arg)) for arg in args)
+
+
+def autostart_shell_command(action: str, target: str) -> str:
+    return shell_join(spark_invocation_args() + [action, target])
+
+
+def render_systemd_autostart_unit(*, target: str, start_command: str, stop_command: str) -> str:
+    return f"""[Unit]
+Description=Spark Telegram agent
+After=default.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={SPARK_HOME}
+Environment=SPARK_HOME={SPARK_HOME}
+ExecStart=/bin/sh -lc {shlex.quote(start_command)}
+ExecStop=/bin/sh -lc {shlex.quote(stop_command)}
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def render_launch_agent_plist(*, target: str, start_command: str, stop_command: str) -> str:
+    stdout_path = LOG_DIR / AUTOSTART_SERVICE_NAME / "launchd.out.log"
+    stderr_path = LOG_DIR / AUTOSTART_SERVICE_NAME / "launchd.err.log"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{xml_escape(AUTOSTART_LAUNCHD_LABEL)}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>{xml_escape(start_command)}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SPARK_HOME</key>
+    <string>{xml_escape(str(SPARK_HOME))}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{xml_escape(str(stdout_path))}</string>
+  <key>StandardErrorPath</key>
+  <string>{xml_escape(str(stderr_path))}</string>
+  <key>AbandonProcessGroup</key>
+  <true/>
+</dict>
+</plist>
+"""
+
+
+def linux_autostart_scope() -> str:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return "system"
+    return "user"
+
+
+def linux_autostart_path(scope: str | None = None) -> Path:
+    resolved_scope = scope or linux_autostart_scope()
+    if resolved_scope == "system":
+        return Path("/etc/systemd/system") / f"{AUTOSTART_SERVICE_NAME}.service"
+    return Path.home() / ".config" / "systemd" / "user" / f"{AUTOSTART_SERVICE_NAME}.service"
+
+
+def systemctl_command(scope: str, *args: str) -> list[str]:
+    if scope == "system":
+        return ["systemctl", *args]
+    return ["systemctl", "--user", *args]
+
+
+def macos_autostart_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{AUTOSTART_LAUNCHD_LABEL}.plist"
+
+
+def run_autostart_helper(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=False, capture_output=True, text=True)
+
+
+def print_helper_failure(command: list[str], result: subprocess.CompletedProcess[str]) -> None:
+    detail = (result.stderr or result.stdout or "").strip()
+    print(f"Autostart helper failed ({shell_join(command)}): {detail or f'exit {result.returncode}'}")
+
+
+def cmd_autostart_install(args: argparse.Namespace) -> int:
+    ensure_state_dirs()
+    target = args.target or "telegram-starter"
+    start_command = autostart_shell_command("start", target)
+    stop_command = autostart_shell_command("stop", target)
+    failures = 0
+
+    if sys.platform.startswith("linux"):
+        scope = linux_autostart_scope()
+        service_path = linux_autostart_path(scope)
+        service_path.parent.mkdir(parents=True, exist_ok=True)
+        service_path.write_text(
+            render_systemd_autostart_unit(
+                target=target,
+                start_command=start_command,
+                stop_command=stop_command,
+            ),
+            encoding="utf-8",
+        )
+        print(f"Installed Spark autostart service ({scope}): {service_path}")
+        for command in (
+            systemctl_command(scope, "daemon-reload"),
+            systemctl_command(scope, "enable", service_path.name),
+        ):
+            result = run_autostart_helper(command)
+            if result.returncode != 0:
+                failures += 1
+                print_helper_failure(command, result)
+        if args.now:
+            command = systemctl_command(scope, "restart", service_path.name)
+            result = run_autostart_helper(command)
+            if result.returncode != 0:
+                failures += 1
+                print_helper_failure(command, result)
+                print(f"Manual fallback for this session: {start_command}")
+        print("Spark will start at login with: " + start_command)
+        return 1 if failures else 0
+
+    if sys.platform == "darwin":
+        plist_path = macos_autostart_path()
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        (LOG_DIR / AUTOSTART_SERVICE_NAME).mkdir(parents=True, exist_ok=True)
+        plist_path.write_text(
+            render_launch_agent_plist(
+                target=target,
+                start_command=start_command,
+                stop_command=stop_command,
+            ),
+            encoding="utf-8",
+        )
+        print(f"Installed Spark LaunchAgent: {plist_path}")
+        uid = str(os.getuid()) if hasattr(os, "getuid") else ""
+        bootstrap_domain = f"gui/{uid}" if uid else "gui"
+        command = ["launchctl", "bootstrap", bootstrap_domain, str(plist_path)]
+        result = run_autostart_helper(command)
+        if result.returncode != 0:
+            failures += 1
+            print_helper_failure(command, result)
+        command = ["launchctl", "enable", f"{bootstrap_domain}/{AUTOSTART_LAUNCHD_LABEL}"]
+        result = run_autostart_helper(command)
+        if result.returncode != 0:
+            failures += 1
+            print_helper_failure(command, result)
+        if args.now:
+            command = ["launchctl", "kickstart", "-k", f"{bootstrap_domain}/{AUTOSTART_LAUNCHD_LABEL}"]
+            result = run_autostart_helper(command)
+            if result.returncode != 0:
+                failures += 1
+                print_helper_failure(command, result)
+                print(f"Manual fallback for this session: {start_command}")
+        print("Spark will start at login with: " + start_command)
+        return 1 if failures else 0
+
+    if sys.platform == "win32":
+        task_command = subprocess.list2cmdline(spark_invocation_args() + ["start", target])
+        command = [
+            "schtasks",
+            "/Create",
+            "/SC",
+            "ONLOGON",
+            "/TN",
+            AUTOSTART_WINDOWS_TASK_NAME,
+            "/TR",
+            task_command,
+            "/F",
+        ]
+        result = run_autostart_helper(command)
+        if result.returncode != 0:
+            print_helper_failure(command, result)
+            return 1
+        print(f"Installed Windows logon task: {AUTOSTART_WINDOWS_TASK_NAME}")
+        if args.now:
+            result = run_autostart_helper(["schtasks", "/Run", "/TN", AUTOSTART_WINDOWS_TASK_NAME])
+            if result.returncode != 0:
+                print_helper_failure(["schtasks", "/Run", "/TN", AUTOSTART_WINDOWS_TASK_NAME], result)
+                print(f"Manual fallback for this session: {start_command}")
+                return 1
+        print("Spark will start at login with: " + task_command)
+        return 0
+
+    raise SystemExit(f"Autostart is not supported on this platform yet: {sys.platform}")
+
+
+def cmd_autostart_uninstall(_: argparse.Namespace) -> int:
+    failures = 0
+    if sys.platform.startswith("linux"):
+        scope = linux_autostart_scope()
+        service_path = linux_autostart_path(scope)
+        disable_command = systemctl_command(scope, "disable", "--now", service_path.name)
+        result = run_autostart_helper(disable_command)
+        if result.returncode != 0:
+            failures += 1
+            print_helper_failure(disable_command, result)
+        if service_path.exists():
+            service_path.unlink()
+            print(f"Removed Spark autostart service: {service_path}")
+        reload_command = systemctl_command(scope, "daemon-reload")
+        result = run_autostart_helper(reload_command)
+        if result.returncode != 0:
+            if service_path.exists():
+                failures += 1
+            print_helper_failure(reload_command, result)
+        return 1 if failures else 0
+
+    if sys.platform == "darwin":
+        plist_path = macos_autostart_path()
+        uid = str(os.getuid()) if hasattr(os, "getuid") else ""
+        bootstrap_domain = f"gui/{uid}" if uid else "gui"
+        if plist_path.exists():
+            result = run_autostart_helper(["launchctl", "bootout", bootstrap_domain, str(plist_path)])
+            if result.returncode != 0:
+                print_helper_failure(["launchctl", "bootout", bootstrap_domain, str(plist_path)], result)
+            plist_path.unlink()
+            print(f"Removed Spark LaunchAgent: {plist_path}")
+        return 0
+
+    if sys.platform == "win32":
+        result = run_autostart_helper(["schtasks", "/Delete", "/TN", AUTOSTART_WINDOWS_TASK_NAME, "/F"])
+        if result.returncode != 0:
+            print_helper_failure(["schtasks", "/Delete", "/TN", AUTOSTART_WINDOWS_TASK_NAME, "/F"], result)
+            return 1
+        print(f"Removed Windows logon task: {AUTOSTART_WINDOWS_TASK_NAME}")
+        return 0
+
+    raise SystemExit(f"Autostart is not supported on this platform yet: {sys.platform}")
+
+
+def cmd_autostart_status(_: argparse.Namespace) -> int:
+    if sys.platform.startswith("linux"):
+        scope = linux_autostart_scope()
+        service_path = linux_autostart_path(scope)
+        print(f"Linux systemd {scope} service: {service_path}")
+        print("Installed: " + ("yes" if service_path.exists() else "no"))
+        if service_path.exists():
+            result = run_autostart_helper(systemctl_command(scope, "is-enabled", service_path.name))
+            enabled = (result.stdout or result.stderr or "").strip() or f"exit {result.returncode}"
+            print(f"Enabled: {enabled}")
+        return 0
+    if sys.platform == "darwin":
+        plist_path = macos_autostart_path()
+        print(f"macOS LaunchAgent: {plist_path}")
+        print("Installed: " + ("yes" if plist_path.exists() else "no"))
+        return 0
+    if sys.platform == "win32":
+        result = run_autostart_helper(["schtasks", "/Query", "/TN", AUTOSTART_WINDOWS_TASK_NAME])
+        print(f"Windows task: {AUTOSTART_WINDOWS_TASK_NAME}")
+        print("Installed: " + ("yes" if result.returncode == 0 else "no"))
+        return 0
+    raise SystemExit(f"Autostart is not supported on this platform yet: {sys.platform}")
+
+
 def module_log_path(module_name: str) -> Path:
     return LOG_DIR / module_name / "process.log"
 
@@ -2703,8 +2984,8 @@ def onboarding_guide_payload() -> dict[str, Any]:
         },
         "start": [
             "spark status",
-            "spark start spawner-ui",
-            "spark start spark-telegram-bot",
+            "spark autostart install --now",
+            "spark start telegram-starter",
         ],
         "telegram_commands": [
             { "command": "/start", "use": "Show the basic command surface." },
@@ -2720,6 +3001,8 @@ def onboarding_guide_payload() -> dict[str, Any]:
         "operator_commands": [
             { "command": "spark status", "use": "Human-readable health check and repair hints." },
             { "command": "spark doctor --json", "use": "Structured diagnostics for agents and support." },
+            { "command": "spark autostart install --now", "use": "Turn on the Telegram agent now and every time this computer logs in." },
+            { "command": "spark autostart status", "use": "Check whether login autostart is installed." },
             { "command": "spark logs spark-telegram-bot", "use": "Read Telegram gateway logs." },
             { "command": "spark logs spawner-ui", "use": "Read mission-control logs." },
             { "command": "spark secrets list", "use": "Confirm configured secret ids without printing secret values." },
@@ -2850,6 +3133,17 @@ def build_parser() -> argparse.ArgumentParser:
     stop_parser = subparsers.add_parser("stop", help="Stop tracked Spark processes")
     stop_parser.add_argument("target", nargs="?")
     stop_parser.set_defaults(func=cmd_stop)
+
+    autostart_parser = subparsers.add_parser("autostart", help="Start Spark automatically when this computer logs in")
+    autostart_subparsers = autostart_parser.add_subparsers(dest="autostart_command", required=True)
+    autostart_install_parser = autostart_subparsers.add_parser("install", help="Install OS login autostart")
+    autostart_install_parser.add_argument("target", nargs="?", default="telegram-starter")
+    autostart_install_parser.add_argument("--now", action="store_true", help="Start Spark immediately after installing autostart")
+    autostart_install_parser.set_defaults(func=cmd_autostart_install)
+    autostart_uninstall_parser = autostart_subparsers.add_parser("uninstall", help="Remove OS login autostart")
+    autostart_uninstall_parser.set_defaults(func=cmd_autostart_uninstall)
+    autostart_status_parser = autostart_subparsers.add_parser("status", help="Show OS login autostart status")
+    autostart_status_parser.set_defaults(func=cmd_autostart_status)
 
     guide_parser = subparsers.add_parser("guide", help="Show first-run BotFather, LLM, module, and Telegram command guide")
     guide_parser.add_argument("--json", action="store_true", help="Emit the guide as structured JSON")

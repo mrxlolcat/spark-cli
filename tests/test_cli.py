@@ -100,6 +100,12 @@ from spark_cli.cli import (
     resolve_install_target,
     resolve_start_modules,
     resolve_stop_module_names,
+    render_launch_agent_plist,
+    render_systemd_autostart_unit,
+    autostart_shell_command,
+    linux_autostart_path,
+    systemctl_command,
+    spark_invocation_args,
     summarize_command_output,
     update_setup_state_after_uninstall,
     update_env_file,
@@ -603,6 +609,82 @@ class SparkCliTests(unittest.TestCase):
         args = build_parser().parse_args(["setup", "--non-interactive"])
         self.assertEqual(args.bundle, "telegram-starter")
 
+    def test_autostart_install_defaults_to_telegram_starter_and_now_is_optional(self) -> None:
+        args = build_parser().parse_args(["autostart", "install", "--now"])
+        self.assertEqual(args.target, "telegram-starter")
+        self.assertTrue(args.now)
+
+    def test_render_systemd_autostart_unit_starts_and_stops_starter_bundle(self) -> None:
+        unit = render_systemd_autostart_unit(
+            target="telegram-starter",
+            start_command="/tmp/spark start telegram-starter",
+            stop_command="/tmp/spark stop telegram-starter",
+        )
+        self.assertIn("Description=Spark Telegram agent", unit)
+        self.assertIn("ExecStart=/bin/sh -lc", unit)
+        self.assertIn("/tmp/spark start telegram-starter", unit)
+        self.assertIn("/tmp/spark stop telegram-starter", unit)
+        self.assertIn("WantedBy=default.target", unit)
+
+    def test_linux_autostart_path_uses_system_service_for_root_scope(self) -> None:
+        self.assertEqual(
+            linux_autostart_path("system"),
+            Path("/etc/systemd/system/spark-telegram-agent.service"),
+        )
+        self.assertIn("--user", systemctl_command("user", "enable", "spark-telegram-agent.service"))
+        self.assertNotIn("--user", systemctl_command("system", "enable", "spark-telegram-agent.service"))
+
+    def test_render_launch_agent_plist_runs_at_login(self) -> None:
+        plist = render_launch_agent_plist(
+            target="telegram-starter",
+            start_command="/tmp/spark start telegram-starter",
+            stop_command="/tmp/spark stop telegram-starter",
+        )
+        self.assertIn("<key>RunAtLoad</key>", plist)
+        self.assertIn("ai.sparkswarm.spark-telegram-agent", plist)
+        self.assertIn("/tmp/spark start telegram-starter", plist)
+
+    def test_autostart_shell_command_uses_current_spark_invocation(self) -> None:
+        with patch("spark_cli.cli.spark_invocation_args", return_value=["/tmp/spark"]):
+            self.assertEqual(
+                autostart_shell_command("start", "telegram-starter"),
+                "/tmp/spark start telegram-starter",
+            )
+
+    def test_spark_invocation_args_uses_python_module_when_running_source_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cli_file = Path(tmp_dir) / "cli.py"
+            cli_file.write_text("pass\n", encoding="utf-8")
+            with patch("spark_cli.cli.sys.argv", [str(cli_file)]), \
+                 patch("spark_cli.cli.shutil.which", return_value=None), \
+                 patch("spark_cli.cli.sys.executable", "/usr/bin/python3"):
+                self.assertEqual(spark_invocation_args(), ["/usr/bin/python3", "-m", "spark_cli.cli"])
+
+    def test_autostart_install_linux_writes_service_and_enables_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service_path = Path(tmp_dir) / "spark-telegram-agent.service"
+            commands: list[list[str]] = []
+
+            def fake_helper(command: list[str]) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            args = build_parser().parse_args(["autostart", "install", "--now"])
+            with patch("spark_cli.cli.sys.platform", "linux"), \
+                 patch("spark_cli.cli.linux_autostart_scope", return_value="user"), \
+                 patch("spark_cli.cli.linux_autostart_path", return_value=service_path), \
+                 patch("spark_cli.cli.spark_invocation_args", return_value=["/tmp/spark"]), \
+                 patch("spark_cli.cli.run_autostart_helper", side_effect=fake_helper), \
+                 patch("sys.stdout", new_callable=StringIO):
+                self.assertEqual(args.func(args), 0)
+
+            unit = service_path.read_text(encoding="utf-8")
+            self.assertIn("/tmp/spark start telegram-starter", unit)
+            self.assertIn("/tmp/spark stop telegram-starter", unit)
+            self.assertIn(["systemctl", "--user", "daemon-reload"], commands)
+            self.assertIn(["systemctl", "--user", "enable", service_path.name], commands)
+            self.assertIn(["systemctl", "--user", "restart", service_path.name], commands)
+
     def test_guide_prints_normie_onboarding_surface(self) -> None:
         args = build_parser().parse_args(["guide"])
         with patch("sys.stdout", new_callable=StringIO) as stdout:
@@ -610,7 +692,8 @@ class SparkCliTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("@BotFather", output)
         self.assertIn("spark setup --llm-provider zai", output)
-        self.assertIn("spark start spark-telegram-bot", output)
+        self.assertIn("spark autostart install --now", output)
+        self.assertIn("spark start telegram-starter", output)
         self.assertIn("/diagnose", output)
         self.assertIn("/run <goal>", output)
         self.assertIn("spark secrets list", output)
@@ -759,8 +842,8 @@ class SparkCliTests(unittest.TestCase):
             setup_output = stdout.getvalue()
             self.assertIn("Next steps:", setup_output)
             self.assertIn("spark status", setup_output)
-            self.assertIn("spark start spawner-ui", setup_output)
-            self.assertIn("spark start spark-telegram-bot", setup_output)
+            self.assertIn("spark autostart install --now", setup_output)
+            self.assertIn("spark start telegram-starter", setup_output)
             self.assertIn("/diagnose", setup_output)
             self.assertIn("Need a bot token? Open @BotFather", setup_output)
             self.assertIn("Builder runtime: prepared Builder home", setup_output)

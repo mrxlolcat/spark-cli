@@ -14,7 +14,7 @@ cd spark-cli
 pip install -e .
 
 spark setup
-spark start spark-telegram-bot
+spark autostart install --now
 spark status
 ```
 
@@ -40,7 +40,7 @@ flowchart TD
   Install --> Secrets["Store secrets safely"]
   Secrets --> Env["Write per-module env files"]
   Env --> Health["Run healthchecks"]
-  Health --> Run["User starts Telegram bot and Spawner"]
+  Health --> Run["Spark autostart starts Telegram and Spawner"]
 ```
 
 The CLI owns:
@@ -150,8 +150,13 @@ For a fresh user, the intended path is:
 ```bash
 spark guide
 spark status
-spark start spawner-ui
-spark start spark-telegram-bot
+spark autostart install --now
+```
+
+That installs the operating-system login hook and starts the local Spark stack immediately. After that, rebooting or logging back into the computer should bring the Telegram agent back without opening a terminal. Manual fallback:
+
+```bash
+spark start telegram-starter
 ```
 
 Then open Telegram and talk to the bot configured during `spark setup`.
@@ -191,6 +196,9 @@ Use `spark <cmd> --help` for full flags.
 | `spark uninstall [target]` | Stop, remove generated env, delete clone, and rotate secrets |
 | `spark start [target]` | Topological launch using `needs.modules` order |
 | `spark stop [target]` | Reverse-topological stop |
+| `spark autostart install --now` | Start Spark now and automatically at computer login |
+| `spark autostart status` | Show whether the login hook is installed |
+| `spark autostart uninstall` | Remove the login hook |
 | `spark status [--json]` | Run module healthchecks with repair hints |
 | `spark doctor [--json]` | Diagnostic variant of status |
 | `spark logs <module>` | Tail `~/.spark/logs/<module>/process.log` |
