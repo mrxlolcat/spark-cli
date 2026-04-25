@@ -110,6 +110,7 @@ from spark_cli.cli import (
     summarize_command_output,
     update_setup_state_after_uninstall,
     update_env_file,
+    write_runtime_shim,
 )
 
 
@@ -573,6 +574,15 @@ class SparkCliTests(unittest.TestCase):
             stderr="module emitted undecodable output",
         )
         self.assertEqual(summarize_command_output(result), "module emitted undecodable output")
+
+    def test_write_runtime_shim_reuses_matching_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            shim_path = Path(tmp_dir) / "python.cmd"
+            shim_path.write_text("@python %*\n", encoding="utf-8")
+            before = shim_path.stat().st_mtime_ns
+            write_runtime_shim(shim_path, "@python %*\n")
+            self.assertEqual(shim_path.read_text(encoding="utf-8"), "@python %*\n")
+            self.assertEqual(shim_path.stat().st_mtime_ns, before)
 
     def test_update_env_file_replaces_managed_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

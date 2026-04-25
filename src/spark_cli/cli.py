@@ -529,6 +529,33 @@ def detect_runtime_binary(name: str) -> dict[str, Any]:
     return {"name": name, "present": True, "path": path, "version": version}
 
 
+def write_runtime_shim(path: Path, content: str, *, executable: bool = False) -> None:
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == content:
+            if executable and os.name != "nt":
+                path.chmod(0o755)
+            return
+    except OSError:
+        pass
+
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        if executable and os.name != "nt":
+            temp_path.chmod(0o755)
+        os.replace(temp_path, path)
+    except PermissionError:
+        if path.exists():
+            return
+        raise
+    finally:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+
+
 def shell_command_env() -> dict[str, str]:
     env = os.environ.copy()
     current_python = Path(sys.executable)
@@ -540,16 +567,12 @@ def shell_command_env() -> dict[str, str]:
     shim_dir.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         for shim_name in ("python.cmd", "python3.cmd"):
-            (shim_dir / shim_name).write_text(f'@"{python_path}" %*\n', encoding="utf-8")
-        (shim_dir / "pip.cmd").write_text(f'@"{python_path}" -m pip %*\n', encoding="utf-8")
+            write_runtime_shim(shim_dir / shim_name, f'@"{python_path}" %*\n')
+        write_runtime_shim(shim_dir / "pip.cmd", f'@"{python_path}" -m pip %*\n')
     else:
         for shim_name in ("python", "python3"):
-            shim_path = shim_dir / shim_name
-            shim_path.write_text(f'#!/usr/bin/env sh\nexec "{python_path}" "$@"\n', encoding="utf-8")
-            shim_path.chmod(0o755)
-        pip_path = shim_dir / "pip"
-        pip_path.write_text(f'#!/usr/bin/env sh\nexec "{python_path}" -m pip "$@"\n', encoding="utf-8")
-        pip_path.chmod(0o755)
+            write_runtime_shim(shim_dir / shim_name, f'#!/usr/bin/env sh\nexec "{python_path}" "$@"\n', executable=True)
+        write_runtime_shim(shim_dir / "pip", f'#!/usr/bin/env sh\nexec "{python_path}" -m pip "$@"\n', executable=True)
     env["PATH"] = str(shim_dir) + os.pathsep + env.get("PATH", "")
     return env
 
