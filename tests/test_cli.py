@@ -127,6 +127,7 @@ from spark_cli.cli import (
     start_module,
     stop_module,
     telegram_profile_runtime_status,
+    tracked_process_keys_for_module,
     wait_for_ready_check,
     windows_service_creationflags,
     resolve_bundle_names,
@@ -2334,6 +2335,18 @@ class SparkCliTests(unittest.TestCase):
         self.assertIn("spark-telegram-bot", detail)
         self.assertIn("spawner-ui (pid 102)", detail)
 
+    def test_tracked_process_keys_for_module_includes_profiled_bots(self) -> None:
+        pids = {
+            "spark-telegram-bot": {"pid": 101, "module": "spark-telegram-bot"},
+            "spark-telegram-bot:spark-agi": {"pid": 102, "module": "spark-telegram-bot"},
+            "spawner-ui": {"pid": 103, "module": "spawner-ui"},
+        }
+
+        self.assertEqual(
+            tracked_process_keys_for_module(pids, "spark-telegram-bot"),
+            ["spark-telegram-bot", "spark-telegram-bot:spark-agi"],
+        )
+
     def test_windows_service_creationflags_keeps_stdio_redirectable(self) -> None:
         flags = windows_service_creationflags()
         detached = int(getattr(subprocess, "DETACHED_PROCESS", 0))
@@ -3222,6 +3235,52 @@ class SparkCliTests(unittest.TestCase):
         stop.assert_called_once_with("spawner-ui", 12345)
         save.assert_called_once_with({})
         install.assert_called_once_with(module)
+
+    def test_cmd_update_stops_all_profiled_module_processes(self) -> None:
+        module = Module(
+            name="spark-telegram-bot",
+            path=Path("C:/tmp/spark-telegram-bot"),
+            manifest={
+                "module": {"name": "spark-telegram-bot", "version": "0.1.0", "kind": "service", "plane": "ingress"}
+            },
+        )
+
+        class Args:
+            target = "spark-telegram-bot"
+            skip_install_commands = True
+
+        pids = {
+            "spark-telegram-bot": {"pid": 111, "module": "spark-telegram-bot"},
+            "spark-telegram-bot:spark-agi": {"pid": 222, "module": "spark-telegram-bot"},
+            "spawner-ui": {"pid": 333, "module": "spawner-ui"},
+        }
+        saved_payloads: list[dict[str, Any]] = []
+
+        def fake_load_pids() -> dict[str, Any]:
+            return {key: dict(value) for key, value in pids.items()}
+
+        def fake_save_pids(payload: dict[str, Any]) -> None:
+            pids.clear()
+            pids.update({key: dict(value) for key, value in payload.items()})
+            saved_payloads.append({key: dict(value) for key, value in payload.items()})
+
+        with patch("spark_cli.cli.resolve_installed_target_modules", return_value=[module]), \
+             patch("spark_cli.cli.print_install_summary"), \
+             patch("spark_cli.cli.load_pids", side_effect=fake_load_pids), \
+             patch("spark_cli.cli.save_pids", side_effect=fake_save_pids), \
+             patch("spark_cli.cli.pid_is_running", return_value=True), \
+             patch("spark_cli.cli.stop_module") as stop, \
+             patch("spark_cli.cli.module_is_git_managed", return_value=False), \
+             patch("spark_cli.cli.run_module_hook"), \
+             patch("spark_cli.cli.load_json", return_value={"spark-telegram-bot": {"installed_via": {"kind": "git", "target": "repo"}}}), \
+             patch("spark_cli.cli.install_module_record"), \
+             patch("spark_cli.cli.sync_generated_env_to_module"):
+            self.assertEqual(cmd_update(Args()), 0)
+
+        stop.assert_any_call("spark-telegram-bot", 111)
+        stop.assert_any_call("spark-telegram-bot:spark-agi", 222)
+        self.assertEqual(stop.call_count, 2)
+        self.assertEqual(saved_payloads[-1], {"spawner-ui": {"pid": 333, "module": "spawner-ui"}})
 
     def test_build_module_repair_hints_reports_missing_dependency_and_config_regen(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -17,6 +17,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ LOG_DIR = SPARK_HOME / "logs"
 REGISTRY_PATH = STATE_DIR / "installed.json"
 CONFIG_PATH = STATE_DIR / "setup.json"
 PID_PATH = STATE_DIR / "pids.json"
+PID_LOCK_PATH = STATE_DIR / "pids.json.lock"
 INSTALL_PROGRESS_PATH = STATE_DIR / "install_progress.json"
 USER_CONFIG_PATH = CONFIG_DIR / "config.json"
 SECRETS_INDEX_PATH = CONFIG_DIR / "secrets_index.json"
@@ -445,7 +447,9 @@ def load_json(path: Path, default: Any) -> Any:
 
 def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp_path, path)
 
 
 def load_module(path: Path) -> Module:
@@ -3512,6 +3516,58 @@ def save_pids(payload: dict[str, Any]) -> None:
     save_json(PID_PATH, payload)
 
 
+@contextmanager
+def pid_file_lock(timeout_seconds: float = 15.0):
+    PID_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with PID_LOCK_PATH.open("a+b") as handle:
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        deadline = time.monotonic() + timeout_seconds
+        if sys.platform == "win32":
+            import msvcrt
+
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise SystemExit("Timed out waiting for Spark process registry lock. Try again in a moment.")
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise SystemExit("Timed out waiting for Spark process registry lock. Try again in a moment.")
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def tracked_process_keys_for_module(pids: dict[str, Any], module_name: str) -> list[str]:
+    keys: list[str] = []
+    for key, record in pids.items():
+        owns_key = key == module_name or key.startswith(f"{module_name}:")
+        owns_record = isinstance(record, dict) and record.get("module") == module_name
+        if owns_key or owns_record:
+            keys.append(key)
+    return sorted(keys)
+
+
 def pid_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -3697,16 +3753,6 @@ def start_module(module: Module, *, allow_boot_warnings: bool = False, profile: 
 
     process_key = module_process_key(module.name, profile)
     display_name = process_key
-    pids = load_pids()
-    existing = pids.get(process_key)
-    if existing:
-        existing_pid = int(existing.get("pid", 0))
-        if pid_is_running(existing_pid):
-            print(f"Skipping {display_name}: already running (pid {existing_pid})")
-            return True
-        pids.pop(process_key, None)
-        save_pids(pids)
-
     log_path = module_log_path(module.name, profile)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     append_process_log(
@@ -3714,13 +3760,11 @@ def start_module(module: Module, *, allow_boot_warnings: bool = False, profile: 
         f"starting command={command!r} cwd={module.path} ready_check={module.ready_check!r}",
         profile=profile,
     )
-    log_handle = log_path.open("a", encoding="utf-8")
 
     subprocess_env = module_runtime_env(module, profile)
     popen_kwargs: dict[str, Any] = {
         "cwd": str(module.path),
         "shell": True,
-        "stdout": log_handle,
         "stderr": subprocess.STDOUT,
         "env": subprocess_env,
     }
@@ -3729,21 +3773,33 @@ def start_module(module: Module, *, allow_boot_warnings: bool = False, profile: 
     else:
         popen_kwargs["start_new_session"] = True
 
-    try:
-        process = subprocess.Popen(command, **popen_kwargs)
-    finally:
-        log_handle.close()
-    pids[process_key] = {
-        "pid": process.pid,
-        "module": module.name,
-        "profile": normalize_telegram_profile(profile),
-        "command": command,
-        "path": str(module.path),
-        "started_at": timestamp_now(),
-        "log_path": str(log_path),
-        "ready_check": module.ready_check,
-    }
-    save_pids(pids)
+    with pid_file_lock():
+        pids = load_pids()
+        existing = pids.get(process_key)
+        if existing:
+            existing_pid = int(existing.get("pid", 0))
+            if pid_is_running(existing_pid):
+                print(f"Skipping {display_name}: already running (pid {existing_pid})")
+                return True
+            pids.pop(process_key, None)
+
+        log_handle = log_path.open("a", encoding="utf-8")
+        popen_kwargs["stdout"] = log_handle
+        try:
+            process = subprocess.Popen(command, **popen_kwargs)
+        finally:
+            log_handle.close()
+        pids[process_key] = {
+            "pid": process.pid,
+            "module": module.name,
+            "profile": normalize_telegram_profile(profile),
+            "command": command,
+            "path": str(module.path),
+            "started_at": timestamp_now(),
+            "log_path": str(log_path),
+            "ready_check": module.ready_check,
+        }
+        save_pids(pids)
     print(f"Started {display_name} (pid {process.pid})")
     ready, detail = wait_for_ready_check(module, process=process, profile=profile)
     if ready:
@@ -3754,11 +3810,12 @@ def start_module(module: Module, *, allow_boot_warnings: bool = False, profile: 
         print(f"Start warning for {display_name}: {warning}")
         append_process_log(module.name, f"start warning pid={process.pid} detail={warning}", profile=profile)
         if process.poll() is not None:
-            latest_pids = load_pids()
-            latest_record = latest_pids.get(process_key, {})
-            if int(latest_record.get("pid", 0)) == int(process.pid):
-                latest_pids.pop(process_key, None)
-                save_pids(latest_pids)
+            with pid_file_lock():
+                latest_pids = load_pids()
+                latest_record = latest_pids.get(process_key, {})
+                if int(latest_record.get("pid", 0)) == int(process.pid):
+                    latest_pids.pop(process_key, None)
+                    save_pids(latest_pids)
         if allow_boot_warnings and process.poll() is None:
             return True
     return ready
@@ -3798,8 +3855,23 @@ def stop_module(name: str, pid: int) -> None:
     print(f"Stopped {name} (pid {pid})")
 
 
+def stop_tracked_process_key(process_key: str) -> bool:
+    with pid_file_lock():
+        pids = load_pids()
+        record = pids.get(process_key)
+        if not isinstance(record, dict):
+            return False
+        pid = int(record.get("pid", 0))
+        if pid and pid_is_running(pid):
+            stop_module(process_key, pid)
+        pids.pop(process_key, None)
+        save_pids(pids)
+    return True
+
+
 def cmd_stop(args: argparse.Namespace) -> int:
-    pids = load_pids()
+    with pid_file_lock():
+        pids = load_pids()
     if not pids:
         print("No tracked Spark processes.")
         return 0
@@ -3815,13 +3887,8 @@ def cmd_stop(args: argparse.Namespace) -> int:
     else:
         target_names = resolve_stop_module_names(args.target, installed_modules, pids)
     for name in target_names:
-        record = pids.get(name)
-        if not record:
+        if not stop_tracked_process_key(name):
             print(f"Skipping {name}: no tracked pid")
-            continue
-        stop_module(name, int(record["pid"]))
-        pids.pop(name, None)
-    save_pids(pids)
     return 0
 
 
@@ -4592,19 +4659,18 @@ def cmd_update(args: argparse.Namespace) -> int:
     if not modules:
         print("No installed Spark modules recorded.")
         return 0
-    pids = load_pids()
     print_install_summary(modules)
     for module in modules:
-        record = pids.get(module.name) if isinstance(pids, dict) else None
-        pid = int(record.get("pid", 0)) if isinstance(record, dict) else 0
-        if pid and pid_is_running(pid):
-            print(f"Stopping {module.name} before update so install commands can replace locked files.")
-            stop_module(module.name, pid)
-            pids.pop(module.name, None)
-            save_pids(pids)
-        elif record:
-            pids.pop(module.name, None)
-            save_pids(pids)
+        with pid_file_lock():
+            pids = load_pids()
+            process_keys = tracked_process_keys_for_module(pids, module.name)
+        for process_key in process_keys:
+            with pid_file_lock():
+                record = load_pids().get(process_key, {})
+            pid = int(record.get("pid", 0)) if isinstance(record, dict) else 0
+            if pid and pid_is_running(pid):
+                print(f"Stopping {process_key} before update so install commands can replace locked files.")
+            stop_tracked_process_key(process_key)
         if module_is_git_managed(module.path):
             ok, detail = pull_module_source(module.path)
             print(f"git pull {module.name}: {'ok' if ok else 'failed'} - {detail}")
@@ -4639,14 +4705,13 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     if blockers and not args.force:
         raise SystemExit("Cannot uninstall because other installed modules depend on it: " + "; ".join(blockers))
 
-    pids = load_pids()
     removed_names: list[str] = []
     for module in modules:
         run_module_hook(module, "pre_uninstall")
-        record = pids.get(module.name)
-        if record:
-            stop_module(module.name, int(record["pid"]))
-            pids.pop(module.name, None)
+        with pid_file_lock():
+            process_keys = tracked_process_keys_for_module(load_pids(), module.name)
+        for process_key in process_keys:
+            stop_tracked_process_key(process_key)
         generated_path = generated_module_env_path(module)
         if generated_path.exists():
             generated_path.unlink()
@@ -4659,7 +4724,6 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         run_module_hook(module, "post_uninstall")
         removed_names.append(module.name)
         print(f"Uninstalled {module.name}")
-    save_pids(pids)
     update_setup_state_after_uninstall(removed_names)
     return 0
 
