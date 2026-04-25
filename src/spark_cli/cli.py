@@ -1306,7 +1306,18 @@ def build_module_envs(args: argparse.Namespace, modules_by_name: dict[str, Modul
     }
 
 
-def initialize_builder_runtime_home(modules_by_name: dict[str, Module]) -> list[str]:
+def split_telegram_admin_ids(raw_admin_ids: str | None) -> list[str]:
+    if not raw_admin_ids:
+        return []
+    admin_ids: list[str] = []
+    for item in raw_admin_ids.split(","):
+        admin_id = item.strip()
+        if admin_id and admin_id not in admin_ids:
+            admin_ids.append(admin_id)
+    return admin_ids
+
+
+def initialize_builder_runtime_home(modules_by_name: dict[str, Module], secret_values: dict[str, str] | None = None) -> list[str]:
     notes: list[str] = []
     builder = modules_by_name.get("spark-intelligence-builder")
     if builder is None:
@@ -1328,6 +1339,7 @@ def initialize_builder_runtime_home(modules_by_name: dict[str, Module]) -> list[
         inserted = True
     try:
         from spark_intelligence.attachments import add_attachment_root, activate_chip, sync_attachment_snapshot
+        from spark_intelligence.channel.service import add_channel
         from spark_intelligence.config.loader import ConfigManager
         from spark_intelligence.state.db import StateDB
 
@@ -1353,6 +1365,22 @@ def initialize_builder_runtime_home(modules_by_name: dict[str, Module]) -> list[
             activate_chip(config_manager, chip_key="domain-chip-memory")
             sync_attachment_snapshot(config_manager=config_manager, state_db=state_db)
             notes.append(f"activated domain-chip-memory at {memory.path}")
+
+        setup_secrets = secret_values or {}
+        telegram_bot_token = setup_secrets.get("telegram.bot_token") or None
+        telegram_admin_ids = split_telegram_admin_ids(setup_secrets.get("telegram.admin_ids"))
+        if telegram_bot_token or telegram_admin_ids:
+            pairing_mode = "allowlist" if telegram_admin_ids else "pairing"
+            add_channel(
+                config_manager=config_manager,
+                state_db=state_db,
+                channel_kind="telegram",
+                bot_token=telegram_bot_token,
+                allowed_users=telegram_admin_ids,
+                pairing_mode=pairing_mode,
+                status="enabled",
+            )
+            notes.append(f"configured Builder telegram channel ({pairing_mode}, {len(telegram_admin_ids)} admin IDs)")
     except Exception as exc:  # pragma: no cover - defensive fallback for partial installs
         notes.append(f"Builder runtime bootstrap skipped: {exc}")
     finally:
@@ -2300,7 +2328,7 @@ def write_setup_runtime_config(
     secret_values: dict[str, str],
 ) -> tuple[list[str], dict[str, str]]:
     """Write Builder state, keychain secrets, and generated module env files."""
-    builder_notes = initialize_builder_runtime_home(modules)
+    builder_notes = initialize_builder_runtime_home(modules, secret_values)
     keychain_report = persist_keychain_secrets(bundle, secret_values)
     generated_envs = build_module_envs(args, modules, secret_values)
     for module in bundle:

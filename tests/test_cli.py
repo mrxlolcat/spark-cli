@@ -39,6 +39,7 @@ from spark_cli.cli import (
     delete_secret,
     fetch_secret,
     infer_module_name_from_url,
+    initialize_builder_runtime_home,
     git_command,
     is_git_source,
     module_is_git_managed,
@@ -116,6 +117,7 @@ from spark_cli.cli import (
     run_setup_wizard,
     shell_command_env,
     setup_is_interactive,
+    split_telegram_admin_ids,
     start_module,
     stop_module,
     wait_for_ready_check,
@@ -1262,6 +1264,125 @@ class SparkCliTests(unittest.TestCase):
             secrets_file = load_json(config_dir / "secrets.local.json", {})
             self.assertEqual(secrets_index["telegram.relay_secret"], "file")
             self.assertIn("telegram.relay_secret", secrets_file)
+
+    def test_split_telegram_admin_ids_trims_and_deduplicates(self) -> None:
+        self.assertEqual(split_telegram_admin_ids(" 111,222,111, ,333 "), ["111", "222", "333"])
+
+    def test_initialize_builder_runtime_home_configures_telegram_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            builder_root = tmp / "spark-intelligence-builder"
+            package_root = builder_root / "src" / "spark_intelligence"
+            (package_root / "channel").mkdir(parents=True)
+            (package_root / "config").mkdir()
+            (package_root / "state").mkdir()
+            (package_root / "__init__.py").write_text("", encoding="utf-8")
+            (package_root / "channel" / "__init__.py").write_text("", encoding="utf-8")
+            (package_root / "config" / "__init__.py").write_text("", encoding="utf-8")
+            (package_root / "state" / "__init__.py").write_text("", encoding="utf-8")
+            (package_root / "attachments.py").write_text(
+                "\n".join(
+                    [
+                        "def add_attachment_root(*args, **kwargs): pass",
+                        "def activate_chip(*args, **kwargs): pass",
+                        "def sync_attachment_snapshot(*args, **kwargs): pass",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (package_root / "config" / "loader.py").write_text(
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "class _Paths:",
+                        "    def __init__(self, home):",
+                        "        self.state_db = Path(home) / 'state.db'",
+                        "class ConfigManager:",
+                        "    def __init__(self, home):",
+                        "        self.home = Path(home)",
+                        "        self.paths = _Paths(home)",
+                        "        self.config = {}",
+                        "    @classmethod",
+                        "    def from_home(cls, home):",
+                        "        return cls(home)",
+                        "    def bootstrap(self):",
+                        "        self.home.mkdir(parents=True, exist_ok=True)",
+                        "    def set_path(self, path, value):",
+                        "        current = self.config",
+                        "        parts = path.split('.')",
+                        "        for part in parts[:-1]:",
+                        "            current = current.setdefault(part, {})",
+                        "        current[parts[-1]] = value",
+                        "    def load(self):",
+                        "        return self.config",
+                        "    def save(self, config, **kwargs):",
+                        "        self.config = config",
+                        "    def upsert_env_secret(self, key, value):",
+                        "        self.home.joinpath('.env').write_text(f'{key}={value}\\n', encoding='utf-8')",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (package_root / "state" / "db.py").write_text(
+                "\n".join(
+                    [
+                        "class StateDB:",
+                        "    def __init__(self, path):",
+                        "        self.path = path",
+                        "    def initialize(self):",
+                        "        pass",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (package_root / "channel" / "service.py").write_text(
+                "\n".join(
+                    [
+                        "def add_channel(*, config_manager, state_db, channel_kind, bot_token, allowed_users, pairing_mode, status=None, metadata=None):",
+                        "    if bot_token:",
+                        "        config_manager.upsert_env_secret('TELEGRAM_BOT_TOKEN', bot_token)",
+                        "    config = config_manager.load()",
+                        "    config.setdefault('channels', {}).setdefault('records', {})[channel_kind] = {",
+                        "        'channel_kind': channel_kind,",
+                        "        'status': status,",
+                        "        'pairing_mode': pairing_mode,",
+                        "        'auth_ref': 'TELEGRAM_BOT_TOKEN' if bot_token else None,",
+                        "        'allowed_users': allowed_users,",
+                        "    }",
+                        "    config_manager.save(config)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            builder = Module(
+                name="spark-intelligence-builder",
+                path=builder_root,
+                manifest={"module": {"name": "spark-intelligence-builder", "version": "0.1.0"}},
+            )
+            spark_home = tmp / "spark-home"
+            state_dir = spark_home / "state"
+            saved_modules = {
+                key: value
+                for key, value in sys.modules.items()
+                if key == "spark_intelligence" or key.startswith("spark_intelligence.")
+            }
+            for key in list(saved_modules):
+                sys.modules.pop(key, None)
+            try:
+                with patch.multiple("spark_cli.cli", SPARK_HOME=spark_home, STATE_DIR=state_dir):
+                    notes = initialize_builder_runtime_home(
+                        {"spark-intelligence-builder": builder},
+                        {"telegram.bot_token": "123456:test-token", "telegram.admin_ids": "111,222"},
+                    )
+            finally:
+                for key in [key for key in sys.modules if key == "spark_intelligence" or key.startswith("spark_intelligence.")]:
+                    sys.modules.pop(key, None)
+                sys.modules.update(saved_modules)
+
+            self.assertIn("configured Builder telegram channel (allowlist, 2 admin IDs)", notes)
+            env_file = state_dir / "spark-intelligence" / ".env"
+            self.assertEqual(env_file.read_text(encoding="utf-8"), "TELEGRAM_BOT_TOKEN=123456:test-token\n")
 
     def test_ensure_generated_setup_secrets_adds_relay_secret_for_gateway(self) -> None:
         gateway = make_module("spark-telegram-bot", ["telegram.ingress"], secrets=["telegram.relay_secret"])
