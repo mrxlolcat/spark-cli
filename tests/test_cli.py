@@ -2707,6 +2707,70 @@ class SparkCliTests(unittest.TestCase):
         self.assertFalse(checks["spawner_mission_relay"]["ok"])
         self.assertFalse(checks["runtime_processes"]["ok"])
 
+    def test_collect_verify_payload_accepts_legacy_spawner_bot_default_provider(self) -> None:
+        expected = ["spark-researcher", "spark-intelligence-builder", "domain-chip-memory", "spawner-ui", "spark-telegram-bot"]
+        status_payload = {
+            "ok": True,
+            "modules": [{"name": name, "healthy": True} for name in expected],
+            "tracked_pids": {
+                "spark-telegram-bot": {"pid": 101},
+                "spawner-ui": {"pid": 102},
+            },
+            "repair_hints": [],
+        }
+        provider_payload = {
+            "ok": True,
+            "roles": {
+                role: {"provider": "zai", "auth_mode": "api_key", "ready": True}
+                for role in ("chat", "builder", "memory", "mission")
+            },
+        }
+        setup_state = {
+            "bundle": "telegram-starter",
+            "secret_keys": ["telegram.bot_token", "telegram.admin_ids"],
+            "builder_home": "C:/tmp/spark/state/spark-intelligence",
+        }
+        installed = {name: {"path": f"C:/tmp/spark/modules/{name}"} for name in expected}
+
+        def fake_load_json(path: Path, default: object) -> object:
+            if Path(path).name == "setup.json":
+                return setup_state
+            if Path(path).name == "installed.json":
+                return installed
+            return default
+
+        def fake_read_generated_env(path: Path) -> dict[str, str]:
+            if Path(path).name == "spark-telegram-bot.env":
+                return {
+                    "TELEGRAM_GATEWAY_MODE": "polling",
+                    "SPARK_BUILDER_BRIDGE_MODE": "required",
+                    "SPARK_BUILDER_HOME": "C:/tmp/spark/state/spark-intelligence",
+                }
+            if Path(path).name == "spark-intelligence-builder.env":
+                return {
+                    "SPARK_INTELLIGENCE_HOME": "C:/tmp/spark/state/spark-intelligence",
+                    "SPARK_DOMAIN_CHIP_MEMORY_ROOT": "C:/tmp/spark/modules/domain-chip-memory",
+                    "SPARK_RESEARCHER_ROOT": "C:/tmp/spark/modules/spark-researcher",
+                }
+            if Path(path).name == "spawner-ui.env":
+                return {
+                    "MISSION_CONTROL_WEBHOOK_URLS": "http://127.0.0.1:8788/spawner-events",
+                    "TELEGRAM_RELAY_SECRET": "relay",
+                    "SPARK_BOT_DEFAULT_PROVIDER": "zai",
+                }
+            return {}
+
+        with patch("spark_cli.cli.collect_status_payload", return_value=status_payload), \
+            patch("spark_cli.cli.provider_status_payload", return_value=provider_payload), \
+            patch("spark_cli.cli.load_json", side_effect=fake_load_json), \
+            patch("spark_cli.cli.read_generated_env", side_effect=fake_read_generated_env), \
+            patch("spark_cli.cli.resolve_bundle_names", return_value=expected), \
+            patch("spark_cli.cli.pid_is_running", return_value=True):
+            payload = collect_verify_payload()
+        self.assertTrue(payload["ok"])
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertTrue(checks["spawner_mission_relay"]["ok"])
+
     def test_update_setup_state_after_uninstall_clears_empty_setup(self) -> None:
         original = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else None
         try:

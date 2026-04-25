@@ -2785,7 +2785,12 @@ def collect_verify_payload(*, deep: bool = False) -> dict[str, Any]:
             }
         )
 
-    mission_provider = spawner_env.get("DEFAULT_MISSION_PROVIDER") or spawner_env.get("SPARK_MISSION_LLM_BOT_PROVIDER")
+    mission_provider = (
+        spawner_env.get("DEFAULT_MISSION_PROVIDER")
+        or spawner_env.get("SPARK_MISSION_LLM_BOT_PROVIDER")
+        or spawner_env.get("SPARK_BOT_DEFAULT_PROVIDER")
+        or spawner_env.get("BOT_DEFAULT_PROVIDER")
+    )
     spawner_ok = (
         bool(spawner_env.get("MISSION_CONTROL_WEBHOOK_URLS"))
         and bool(spawner_env.get("TELEGRAM_RELAY_SECRET"))
@@ -2802,7 +2807,7 @@ def collect_verify_payload(*, deep: bool = False) -> dict[str, Any]:
                 if spawner_ok
                 else "Spawner mission relay or mission LLM provider is not ready."
             ),
-            "repair": "spark setup --mission-llm-provider openai",
+            "repair": "spark setup --mission-llm-provider <provider>",
         }
     )
 
