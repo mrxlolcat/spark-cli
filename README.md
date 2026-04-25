@@ -138,6 +138,12 @@ spark setup --llm-provider zai --zai-api-key @clipboard --resume
 
 The same shortcut works for BotFather tokens and generic secrets, for example `spark setup --bot-token @clipboard --resume`.
 
+Rerunning setup is meant to be a fast configuration refresh. If the starter stack is already installed, `spark setup --resume` reuses the installed modules and skips `pip`/`npm` dependency commands by default, so your terminal stays responsive. To intentionally repair or reinstall dependencies, run:
+
+```bash
+spark setup --resume --run-install-commands
+```
+
 For more control, set separate providers for Spark's roles:
 
 ```bash

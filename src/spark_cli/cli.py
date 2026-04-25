@@ -2138,6 +2138,19 @@ def run_install_commands_with_progress(
     record_install_step(progress_key, "install_commands")
 
 
+def setup_should_run_install_commands(
+    module: Module,
+    installed_modules: dict[str, Module],
+    args: argparse.Namespace,
+) -> bool:
+    """Return whether setup should run dependency install commands for this module."""
+    if getattr(args, "skip_install_commands", False):
+        return False
+    if getattr(args, "run_install_commands", False):
+        return True
+    return module.name not in installed_modules
+
+
 def print_setup_next_steps(bundle_name: str, ingress_owner: Module, llm_state: dict[str, Any]) -> None:
     provider = llm_state.get("provider") or "unknown"
     model = llm_state.get("model") or "not configured"
@@ -2213,9 +2226,19 @@ def cmd_setup(args: argparse.Namespace) -> int:
     }
     save_json(CONFIG_PATH, setup_state)
     resume = getattr(args, "resume", False)
+    setup_install_skips: dict[str, bool] = {}
     for module in bundle:
         ensure_trust_for_install(args, module, module.name)
-        run_install_commands_with_progress(module, module.name, args, resume)
+        if setup_should_run_install_commands(module, installed_modules, args):
+            run_install_commands_with_progress(module, module.name, args, resume)
+            setup_install_skips[module.name] = False
+        else:
+            setup_install_skips[module.name] = True
+            if module.name in installed_modules and not getattr(args, "skip_install_commands", False):
+                print(
+                    f"Skipping install commands for {module.name}: already installed "
+                    "(use --run-install-commands to reinstall dependencies)."
+                )
     install_modules(bundle)
     for module in bundle:
         install_module_record(
@@ -2224,7 +2247,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             source_kind="bundle",
             source_target=args.bundle,
             bundle_name=args.bundle,
-            skip_install_commands=args.skip_install_commands,
+            skip_install_commands=args.skip_install_commands or setup_install_skips.get(module.name, False),
         )
         clear_install_progress(module.name)
 
@@ -4344,6 +4367,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bundle to configure (default: telegram-starter)",
     )
     setup_parser.add_argument("--skip-install-commands", action="store_true")
+    setup_parser.add_argument(
+        "--run-install-commands",
+        action="store_true",
+        help="Re-run dependency install commands for already installed modules",
+    )
     setup_parser.add_argument("--skip-runtime-check", action="store_true", help="Skip [runtime].version constraint enforcement")
     setup_parser.add_argument("--trust", action="store_true", help="Approve running install commands and hooks for non-blessed bundle modules without prompting")
     setup_parser.add_argument("--resume", action="store_true", help="Skip install steps that succeeded on a prior attempt")

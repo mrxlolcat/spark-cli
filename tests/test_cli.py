@@ -69,6 +69,7 @@ from spark_cli.cli import (
     record_install_failure,
     record_install_step,
     run_install_commands_with_progress,
+    setup_should_run_install_commands,
     step_previously_completed,
     manifest_schema_version,
     needs_capabilities,
@@ -364,6 +365,55 @@ class SparkCliTests(unittest.TestCase):
                 progress = load_install_progress("fail-me")
                 self.assertEqual(progress["failed_step"], "install_commands")
                 self.assertNotIn("install_commands", progress.get("steps_completed", []))
+
+    def test_setup_should_skip_install_commands_for_installed_modules_by_default(self) -> None:
+        module = Module(
+            name="already-installed",
+            path=Path("C:/tmp/already-installed"),
+            manifest={
+                "module": {"name": "already-installed", "version": "0.1.0", "kind": "service", "plane": "execution"},
+                "install": {"dev": {"commands": ["npm ci"]}},
+            },
+        )
+
+        class Args:
+            skip_install_commands = False
+            run_install_commands = False
+
+        self.assertFalse(setup_should_run_install_commands(module, {module.name: module}, Args()))
+        self.assertTrue(setup_should_run_install_commands(module, {}, Args()))
+
+    def test_setup_should_run_install_commands_when_forced(self) -> None:
+        module = Module(
+            name="already-installed",
+            path=Path("C:/tmp/already-installed"),
+            manifest={
+                "module": {"name": "already-installed", "version": "0.1.0", "kind": "service", "plane": "execution"},
+                "install": {"dev": {"commands": ["npm ci"]}},
+            },
+        )
+
+        class Args:
+            skip_install_commands = False
+            run_install_commands = True
+
+        self.assertTrue(setup_should_run_install_commands(module, {module.name: module}, Args()))
+
+    def test_setup_explicit_skip_install_commands_wins_over_force(self) -> None:
+        module = Module(
+            name="fresh",
+            path=Path("C:/tmp/fresh"),
+            manifest={
+                "module": {"name": "fresh", "version": "0.1.0", "kind": "service", "plane": "execution"},
+                "install": {"dev": {"commands": ["npm ci"]}},
+            },
+        )
+
+        class Args:
+            skip_install_commands = True
+            run_install_commands = True
+
+        self.assertFalse(setup_should_run_install_commands(module, {}, Args()))
 
     def test_parse_version_tuple_extracts_digits(self) -> None:
         self.assertEqual(parse_version_tuple("Python 3.13.5"), (3, 13, 5))
