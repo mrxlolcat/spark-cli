@@ -2450,6 +2450,7 @@ def provider_catalog_payload() -> dict[str, Any]:
 def provider_status_payload() -> dict[str, Any]:
     setup_state = load_json(CONFIG_PATH, {})
     llm_state = setup_state.get("llm") if isinstance(setup_state, dict) else None
+    secret_keys = set(setup_state.get("secret_keys", [])) if isinstance(setup_state, dict) else set()
     if not isinstance(llm_state, dict):
         return {
             "ok": False,
@@ -2468,9 +2469,22 @@ def provider_status_payload() -> dict[str, Any]:
             state = {}
         provider = str(state.get("provider") or llm_state.get("provider") or "not_configured")
         auth_mode = str(state.get("auth_mode") or llm_state.get("auth_mode") or "not_configured")
+        provider_spec = LLM_PROVIDER_ENV.get(provider, {})
+        api_key_secret = provider_spec.get("api_key_secret")
+        if auth_mode == "not_configured":
+            if bool(state.get("api_key_configured") or llm_state.get("api_key_configured")):
+                auth_mode = "api_key"
+            elif api_key_secret and api_key_secret in secret_keys:
+                auth_mode = "api_key"
+            elif provider in {"codex", "openai"} and detect_codex_cli()["present"]:
+                auth_mode = "codex_oauth"
+            elif provider == "anthropic" and detect_claude_code()["present"]:
+                auth_mode = "claude_oauth"
+            elif provider == "ollama":
+                auth_mode = "local"
         role_payload[role] = {
             "provider": provider,
-            "bot_provider": state.get("bot_provider") or LLM_PROVIDER_ENV.get(provider, {}).get("bot_provider"),
+            "bot_provider": state.get("bot_provider") or provider_spec.get("bot_provider"),
             "model": state.get("model") or llm_state.get("model") or "",
             "auth_mode": auth_mode,
             "ready": provider != "not_configured" and auth_mode != "not_configured",

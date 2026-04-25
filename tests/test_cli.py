@@ -2475,6 +2475,23 @@ class SparkCliTests(unittest.TestCase):
             self.assertEqual(payload["roles"][role]["auth_mode"], "codex_oauth")
             self.assertEqual(payload["roles"][role]["model"], "gpt-5.5")
 
+    def test_provider_status_payload_uses_legacy_secret_keys_for_api_auth(self) -> None:
+        setup_state = {
+            "secret_keys": ["llm.zai.api_key"],
+            "llm": {
+                "provider": "zai",
+                "model": "glm-5.1",
+                "api_key_configured": True,
+            },
+        }
+        with patch("spark_cli.cli.load_json", return_value=setup_state):
+            payload = provider_status_payload()
+        self.assertTrue(payload["ok"])
+        for role in ("chat", "builder", "memory", "mission"):
+            self.assertTrue(payload["roles"][role]["ready"])
+            self.assertEqual(payload["roles"][role]["auth_mode"], "api_key")
+            self.assertEqual(payload["roles"][role]["model"], "glm-5.1")
+
     def test_collect_verify_payload_reports_launch_ready_stack(self) -> None:
         expected = [
             "spark-researcher",
@@ -2749,6 +2766,8 @@ class SparkCliTests(unittest.TestCase):
         self.assertIn("function Add-SparkBinToUserPath", script)
         self.assertIn('[Environment]::SetEnvironmentVariable("Path", $newPath, "User")', script)
         self.assertIn("Add-SparkBinToUserPath", script)
+        self.assertIn("Warn-SparkCommandConflict", script)
+        self.assertIn("A different spark command is earlier on fresh Windows PATH", script)
         self.assertIn("[switch]$AllowDevSource", script)
         self.assertIn("Test-InstallSettings", script)
         self.assertIn("Refusing non-canonical Spark CLI source", script)
