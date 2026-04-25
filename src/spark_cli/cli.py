@@ -4239,8 +4239,19 @@ def cmd_update(args: argparse.Namespace) -> int:
     if not modules:
         print("No installed Spark modules recorded.")
         return 0
+    pids = load_pids()
     print_install_summary(modules)
     for module in modules:
+        record = pids.get(module.name) if isinstance(pids, dict) else None
+        pid = int(record.get("pid", 0)) if isinstance(record, dict) else 0
+        if pid and pid_is_running(pid):
+            print(f"Stopping {module.name} before update so install commands can replace locked files.")
+            stop_module(module.name, pid)
+            pids.pop(module.name, None)
+            save_pids(pids)
+        elif record:
+            pids.pop(module.name, None)
+            save_pids(pids)
         if module_is_git_managed(module.path):
             ok, detail = pull_module_source(module.path)
             print(f"git pull {module.name}: {'ok' if ok else 'failed'} - {detail}")

@@ -27,6 +27,7 @@ from spark_cli.cli import (
     collect_telegram_fix_payload,
     collect_verify_payload,
     cmd_setup,
+    cmd_update,
     console_safe_text,
     CONFIG_PATH,
     detect_runtime_binary,
@@ -2813,6 +2814,37 @@ class SparkCliTests(unittest.TestCase):
             self.assertFalse(record["last_update"]["skip_install_commands"])
             self.assertEqual(record["installed_at"], record["last_install"]["at"])
             self.assertIn("updated_at", record)
+
+    def test_cmd_update_stops_running_module_before_install_commands(self) -> None:
+        module = Module(
+            name="spawner-ui",
+            path=Path("C:/tmp/spawner-ui"),
+            manifest={
+                "module": {"name": "spawner-ui", "version": "0.1.0", "kind": "app", "plane": "execution"}
+            },
+        )
+
+        class Args:
+            target = None
+            skip_install_commands = False
+
+        with patch("spark_cli.cli.resolve_installed_target_modules", return_value=[module]), \
+             patch("spark_cli.cli.print_install_summary"), \
+             patch("spark_cli.cli.load_pids", return_value={"spawner-ui": {"pid": 12345}}), \
+             patch("spark_cli.cli.pid_is_running", return_value=True), \
+             patch("spark_cli.cli.stop_module") as stop, \
+             patch("spark_cli.cli.save_pids") as save, \
+             patch("spark_cli.cli.module_is_git_managed", return_value=False), \
+             patch("spark_cli.cli.execute_install_commands") as install, \
+             patch("spark_cli.cli.run_module_hook"), \
+             patch("spark_cli.cli.load_json", return_value={"spawner-ui": {"installed_via": {"kind": "git", "target": "repo"}}}), \
+             patch("spark_cli.cli.install_module_record"), \
+             patch("spark_cli.cli.sync_generated_env_to_module"):
+            self.assertEqual(cmd_update(Args()), 0)
+
+        stop.assert_called_once_with("spawner-ui", 12345)
+        save.assert_called_once_with({})
+        install.assert_called_once_with(module)
 
     def test_build_module_repair_hints_reports_missing_dependency_and_config_regen(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
