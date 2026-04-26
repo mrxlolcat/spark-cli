@@ -1317,6 +1317,7 @@ class SparkCliTests(unittest.TestCase):
         self.assertIn("spark start spark-telegram-bot --profile qa-bot", output)
         self.assertIn("Choose Spark access level", output)
         self.assertIn("Level 2 - Build When Asked", output)
+        self.assertIn("Level 3 - Research + Build: Default.", output)
         self.assertIn("Level 4 - Full Access", output)
         self.assertIn("operating-system access", output)
         self.assertIn("/diagnose", output)
@@ -1334,6 +1335,8 @@ class SparkCliTests(unittest.TestCase):
         self.assertIn("telegram_commands", payload)
         self.assertIn("multi_bot_profiles", payload)
         self.assertIn("access_levels", payload)
+        self.assertEqual(payload["access_levels"][2]["name"], "Research + Build")
+        self.assertIn("Default", payload["access_levels"][2]["use"])
         self.assertIn("Windows PowerShell/CMD", payload["operating_systems"])
         self.assertEqual(
             [item["role"] for item in payload["setup"]["llm_roles"]],
