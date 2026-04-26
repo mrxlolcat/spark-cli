@@ -1096,7 +1096,7 @@ def primary_telegram_profile(setup_state: dict[str, Any] | None = None) -> str:
         for profile in sorted(profiles):
             if isinstance(profiles.get(profile), dict):
                 return normalize_telegram_profile(str(profile))
-    return DEFAULT_TELEGRAM_PROFILE
+    return "spark-agi"
 
 
 def module_process_key(module_name: str, profile: str | None = None) -> str:
@@ -1591,6 +1591,8 @@ def build_module_envs(args: argparse.Namespace, modules_by_name: dict[str, Modul
         "SPARK_BUILDER_BRIDGE_MODE": "required",
         "SPAWNER_UI_URL": args.spawner_ui_url or "http://127.0.0.1:5173",
         "TELEGRAM_GATEWAY_MODE": "polling",
+        "TELEGRAM_RELAY_PORT": "8788",
+        "SPARK_TELEGRAM_PROFILE": primary_telegram_profile(),
         "TELEGRAM_RELAY_SECRET": relay_secret,
     }
     if character is not None:
@@ -2727,6 +2729,12 @@ def collect_setup_configuration(
         setup_state["telegram_profiles"] = preserved_profiles
     if isinstance(preserved_primary_profile, str) and preserved_primary_profile.strip():
         setup_state[PRIMARY_TELEGRAM_PROFILE_KEY] = normalize_telegram_profile(preserved_primary_profile)
+    else:
+        setup_state[PRIMARY_TELEGRAM_PROFILE_KEY] = "spark-agi"
+    primary_profile_secret = telegram_profile_secret_id(setup_state[PRIMARY_TELEGRAM_PROFILE_KEY], "bot_token")
+    if "telegram.bot_token" in secret_values and primary_profile_secret not in secret_values:
+        secret_values[primary_profile_secret] = secret_values["telegram.bot_token"]
+        setup_state["secret_keys"] = sorted(set(setup_state["secret_keys"]) | {primary_profile_secret})
     return secret_values, setup_state
 
 
@@ -2845,6 +2853,12 @@ def persist_keychain_secrets(bundle: list[Module], secret_values: dict[str, str]
             backend = store_secret(secret_id, value, preferred="keychain")
             report[secret_id] = backend
             seen.add(secret_id)
+    for secret_id, value in secret_values.items():
+        if secret_id in seen or not secret_id.startswith("telegram.profiles.") or not value:
+            continue
+        backend = store_secret(secret_id, value, preferred="keychain")
+        report[secret_id] = backend
+        seen.add(secret_id)
     return report
 
 
