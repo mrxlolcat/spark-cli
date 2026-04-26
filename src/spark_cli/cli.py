@@ -619,6 +619,7 @@ def collect_secret_values(
         "llm.zai.api_key": getattr(args, "zai_api_key", None),
         "llm.openai.api_key": getattr(args, "openai_api_key", None),
         "llm.anthropic.api_key": getattr(args, "anthropic_api_key", None),
+        "llm.minimax.api_key": getattr(args, "minimax_api_key", None),
     }
     for key, value in legacy_map.items():
         if value:
@@ -1177,6 +1178,17 @@ LLM_PROVIDER_ENV: dict[str, dict[str, str]] = {
         "model_default": "claude-sonnet-4.5",
         "bot_provider": "claude",
     },
+    "minimax": {
+        "api_key_secret": "llm.minimax.api_key",
+        "api_key_env": "MINIMAX_API_KEY",
+        "base_url_arg": "minimax_base_url",
+        "base_url_env": "MINIMAX_BASE_URL",
+        "base_url_default": "https://api.minimax.io/v1",
+        "model_arg": "minimax_model",
+        "model_env": "MINIMAX_MODEL",
+        "model_default": "MiniMax-M2.7",
+        "bot_provider": "minimax",
+    },
     "ollama": {
         "base_url_arg": "ollama_url",
         "base_url_env": "OLLAMA_URL",
@@ -1202,7 +1214,7 @@ LLM_PROVIDER_ENV: dict[str, dict[str, str]] = {
 
 LLM_PROVIDER_CHOICES = sorted(provider for provider in LLM_PROVIDER_ENV if provider != "not_configured")
 LLM_ROLES = ("chat", "builder", "memory", "mission")
-LLM_PROVIDER_WIZARD_ORDER = ("openai", "codex", "anthropic", "zai", "ollama")
+LLM_PROVIDER_WIZARD_ORDER = ("openai", "codex", "anthropic", "zai", "minimax", "ollama")
 LLM_ROLE_LABELS = {
     "chat": "Telegram chat replies",
     "builder": "Builder reasoning",
@@ -1214,6 +1226,7 @@ LLM_PROVIDER_LABELS = {
     "codex": "Codex CLI / ChatGPT sign-in",
     "anthropic": "Anthropic / Claude",
     "zai": "Z.AI / GLM coding endpoint",
+    "minimax": "MiniMax",
     "ollama": "Ollama local",
 }
 LLM_PROVIDER_AUTH_HINTS = {
@@ -1221,6 +1234,7 @@ LLM_PROVIDER_AUTH_HINTS = {
     "codex": "signed-in Codex CLI",
     "anthropic": "Claude Code sign-in or ANTHROPIC_API_KEY",
     "zai": "ZAI_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
     "ollama": "local Ollama server",
 }
 
@@ -1239,6 +1253,8 @@ def describe_llm_provider_setup(provider: str) -> str:
         status = "local Ollama server"
     elif provider == "zai":
         status = "uses the GLM coding endpoint API key"
+    elif provider == "minimax":
+        status = "uses the MiniMax OpenAI-compatible API key"
     return f"{LLM_PROVIDER_LABELS[provider]} ({spec['model_default']}; {auth_hint}; {status})"
 
 
@@ -1249,7 +1265,7 @@ def setup_has_llm_provider_selection(args: argparse.Namespace) -> bool:
 
 
 def provider_requires_wizard_api_key(provider: str) -> bool:
-    if provider == "zai":
+    if provider in {"zai", "minimax"}:
         return True
     if provider == "openai":
         return not detect_codex_cli()["present"]
@@ -1300,9 +1316,9 @@ def collect_provider_api_keys(providers: list[str], secret_values: dict[str, str
         hint = LLM_PROVIDER_AUTH_HINTS.get(provider, "API key")
         print(f"")
         print(f"{label} needs {hint} for this setup.")
-        if provider == "zai":
+        if provider in {"zai", "minimax"}:
             print(f"  Endpoint: {spec['base_url_default']}")
-            print(f"  Model: {spec['model_default']} (override with --zai-model if needed)")
+            print(f"  Model: {spec['model_default']} (override with --{provider}-model if needed)")
         value = prompt_for_secret(
             str(secret_id),
             {
@@ -1321,15 +1337,15 @@ def run_llm_provider_wizard(args: argparse.Namespace, secret_values: dict[str, s
     if resolve_llm_provider(args, secret_values) != "not_configured":
         return collect_provider_api_keys(selected_llm_providers(args, secret_values), secret_values)
     print("")
-    print("Choose Spark LLM provider")
-    print("  Pick the provider Spark should use for normal chat, Builder, and memory.")
-    print("  Missions can use a local executor like Codex or Claude when available.")
+    print("Choose your chat brain")
+    print("  This powers normal Telegram chat, Builder reasoning, and memory.")
+    print("  Build missions can use Codex or Claude locally when they are available.")
     print("  Press Enter for the recommended OpenAI/Codex path, or type a number/provider name.")
     for index, provider in enumerate(LLM_PROVIDER_WIZARD_ORDER, start=1):
         suffix = " [recommended]" if provider == "openai" else ""
         print(f"  {index}. {describe_llm_provider_setup(provider)}{suffix}")
     print("  0. Skip for now")
-    provider = prompt_for_provider_choice("Provider [1/OpenAI, 0 to skip]: ", "openai")
+    provider = prompt_for_provider_choice("Chat brain [1/OpenAI, 0 to skip]: ", "openai")
     if provider is None:
         return secret_values
     if provider == "not_configured":
@@ -1339,10 +1355,10 @@ def run_llm_provider_wizard(args: argparse.Namespace, secret_values: dict[str, s
     try:
         print("")
         print("Role setup")
-        print("  1. Recommended: use this provider for chat/Builder/memory, and a local executor for missions when available.")
-        print("  2. Use one provider for every role.")
-        print("  3. Customize chat, Builder, memory, and mission providers.")
-        split_roles = input("Role setup [1]: ").strip().lower()
+        print("  1. Balanced: use this brain for chat/Builder/memory; use Codex/Claude for builds when available.")
+        print("  2. Same brain everywhere: use this provider for chat, Builder, memory, and missions.")
+        print("  3. Pick per role: choose separate providers for chat, Builder, memory, and missions.")
+        split_roles = input("Role setup [1/Balanced]: ").strip().lower()
     except EOFError:
         split_roles = ""
     if split_roles in {"2", "same", "one", "all"}:
@@ -2478,7 +2494,7 @@ def build_llm_repair_hints(llm_state: dict[str, Any], *, secret_keys: set[str] |
         role_flag = "--llm-provider" if role == "all" else f"--{role}-llm-provider"
         if provider == "not_configured":
             hints.append(
-                f"{role_label} is not configured. Run `spark setup {role_flag} openai` to use Codex/OpenAI, or choose anthropic, zai, ollama, or codex."
+                f"{role_label} is not configured. Run `spark setup {role_flag} openai` to use Codex/OpenAI, or choose anthropic, zai, minimax, ollama, or codex."
             )
         elif provider == "zai" and auth_mode == "not_configured":
             hints.append(
@@ -2487,6 +2503,10 @@ def build_llm_repair_hints(llm_state: dict[str, Any], *, secret_keys: set[str] |
         elif provider == "anthropic" and auth_mode == "not_configured":
             hints.append(
                 f"{role_label} uses Anthropic but neither Claude Code nor ANTHROPIC_API_KEY is configured. Run `claude` to sign in, or rerun `spark setup {role_flag} anthropic --anthropic-api-key <key>`."
+            )
+        elif provider == "minimax" and auth_mode == "not_configured":
+            hints.append(
+                f"{role_label} uses MiniMax but is missing an API key. Re-run `spark setup {role_flag} minimax --minimax-api-key <key>`."
             )
         elif provider == "openai" and auth_mode == "not_configured":
             hints.append(
@@ -3202,6 +3222,14 @@ def provider_catalog_payload() -> dict[str, Any]:
                 "oauth_available": False,
                 "recommended_for": ["chat", "builder", "mission"],
                 "setup": "spark setup --llm-provider zai --zai-api-key <key>",
+            },
+            {
+                "id": "minimax",
+                "label": "MiniMax",
+                "auth": ["api_key"],
+                "oauth_available": False,
+                "recommended_for": ["chat", "builder", "mission"],
+                "setup": "spark setup --llm-provider minimax --minimax-api-key <key>",
             },
             {
                 "id": "ollama",
@@ -5162,10 +5190,11 @@ def onboarding_guide_payload() -> dict[str, Any]:
                 "spark setup --llm-provider anthropic",
                 "spark setup --llm-provider anthropic --anthropic-api-key <ANTHROPIC_API_KEY>",
                 "spark setup --llm-provider zai --zai-api-key <ZAI_API_KEY>",
+                "spark setup --llm-provider minimax --minimax-api-key <MINIMAX_API_KEY>",
                 "spark setup --llm-provider ollama --ollama-url http://localhost:11434 --ollama-model <MODEL>",
-                "spark setup --chat-llm-provider openai --builder-llm-provider openai --memory-llm-provider ollama --mission-llm-provider openai",
+                "spark setup --chat-llm-provider openai --builder-llm-provider openai --memory-llm-provider ollama --mission-llm-provider minimax",
             ],
-            "llm_auth_note": "The easiest path is `spark setup` and the guided picker. OpenAI can use a signed-in Codex CLI / ChatGPT session or OPENAI_API_KEY. Anthropic can use Claude Code or ANTHROPIC_API_KEY. Z.AI uses ZAI_API_KEY. Ollama is local. If your default chat LLM is not a local executor, Spark uses Codex or Claude for mission/build execution when available.",
+            "llm_auth_note": "The easiest path is `spark setup` and the guided picker. OpenAI can use a signed-in Codex CLI / ChatGPT session or OPENAI_API_KEY. Anthropic can use Claude Code or ANTHROPIC_API_KEY. Z.AI and MiniMax use API keys. Ollama is local. If your default chat LLM is not a local executor, Spark uses Codex or Claude for mission/build execution when available.",
         },
         "start": [
             "spark status",
@@ -5337,6 +5366,9 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--anthropic-api-key", help="Anthropic API key, @clipboard, or @env:NAME")
     setup_parser.add_argument("--anthropic-base-url", default="https://api.anthropic.com")
     setup_parser.add_argument("--anthropic-model", default="claude-sonnet-4.5")
+    setup_parser.add_argument("--minimax-api-key", help="MiniMax API key, @clipboard, or @env:NAME")
+    setup_parser.add_argument("--minimax-base-url", default="https://api.minimax.io/v1")
+    setup_parser.add_argument("--minimax-model", default="MiniMax-M2.7")
     setup_parser.add_argument("--ollama-url", default="http://localhost:11434")
     setup_parser.add_argument("--ollama-model", default="kimi-k2.5:cloud")
     setup_parser.add_argument("--codex-model", default="gpt-5.5")

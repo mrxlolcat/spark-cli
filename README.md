@@ -135,6 +135,7 @@ Provider options:
 | Codex CLI | Sign in with `codex`, then run `spark setup --llm-provider codex` | Uses the signed-in Codex CLI, no API key flag |
 | Anthropic | Sign in with `claude`, then run `spark setup --llm-provider anthropic` | `spark setup --llm-provider anthropic --anthropic-api-key <ANTHROPIC_API_KEY>` |
 | Z.AI / GLM | Use the coding endpoint key | `spark setup --llm-provider zai --zai-api-key <ZAI_API_KEY>` |
+| MiniMax | Use a MiniMax API key | `spark setup --llm-provider minimax --minimax-api-key <MINIMAX_API_KEY>` |
 | Ollama | Start Ollama locally | `spark setup --llm-provider ollama --ollama-url http://localhost:11434 --ollama-model <MODEL>` |
 
 If your terminal will not paste secrets, copy the key normally and type `@clipboard` instead of the key:
@@ -163,7 +164,7 @@ spark setup \
   --chat-llm-provider openai \
   --builder-llm-provider openai \
   --memory-llm-provider ollama \
-  --mission-llm-provider openai
+  --mission-llm-provider minimax
 ```
 
 `--llm-provider` remains the simple default for all roles. The role-specific flags override it when you want, for example, a local model for memory and a stronger cloud model for Builder or mission work.

@@ -968,13 +968,13 @@ class SparkCliTests(unittest.TestCase):
                 "--memory-llm-provider",
                 "ollama",
                 "--mission-llm-provider",
-                "anthropic",
+                "minimax",
             ]
         )
         self.assertEqual(args.chat_llm_provider, "zai")
         self.assertEqual(args.builder_llm_provider, "openai")
         self.assertEqual(args.memory_llm_provider, "ollama")
-        self.assertEqual(args.mission_llm_provider, "anthropic")
+        self.assertEqual(args.mission_llm_provider, "minimax")
 
     def test_resolve_llm_roles_defaults_chat_api_missions_to_codex_executor(self) -> None:
         args = build_parser().parse_args(["setup", "--non-interactive", "--llm-provider", "zai"])
@@ -3053,6 +3053,22 @@ class SparkCliTests(unittest.TestCase):
             values = run_llm_provider_wizard(args, {})
         self.assertEqual(values["llm.zai.api_key"], "zai-test-key")
 
+    def test_run_llm_provider_wizard_selects_minimax_and_collects_key(self) -> None:
+        class Args:
+            llm_provider = None
+            chat_llm_provider = None
+            builder_llm_provider = None
+            memory_llm_provider = None
+            mission_llm_provider = None
+
+        args = Args()
+        with patch("builtins.input", side_effect=["minimax", ""]), \
+             patch("spark_cli.cli.detect_codex_cli", return_value={"present": True, "path": "codex"}), \
+             patch("spark_cli.cli.getpass.getpass", return_value="minimax-test-key"):
+            values = run_llm_provider_wizard(args, {})
+        self.assertEqual(args.llm_provider, "minimax")
+        self.assertEqual(values["llm.minimax.api_key"], "minimax-test-key")
+
     def test_run_llm_provider_wizard_can_customize_roles(self) -> None:
         class Args:
             llm_provider = None
@@ -3092,10 +3108,14 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(values, {})
         getpass_mock.assert_not_called()
         output = stdout.getvalue()
+        self.assertIn("Choose your chat brain", output)
         self.assertIn("recommended OpenAI/Codex path", output)
+        self.assertIn("MiniMax", output)
         self.assertIn("ChatGPT/Codex sign-in detected", output)
-        self.assertIn("Recommended: use this provider for chat/Builder/memory", output)
-        self.assertIn("Use one provider for every role", output)
+        self.assertIn("Balanced: use this brain for chat/Builder/memory", output)
+        self.assertIn("Same brain everywhere", output)
+        self.assertIn("Pick per role", output)
+        self.assertNotIn("Advanced", output)
 
     def test_collect_secret_values_prompts_when_interactive_and_missing(self) -> None:
         module = Module(
@@ -3861,7 +3881,7 @@ class SparkCliTests(unittest.TestCase):
             hints,
         )
         self.assertIn(
-            "LLM role `chat` is not configured. Run `spark setup --chat-llm-provider openai` to use Codex/OpenAI, or choose anthropic, zai, ollama, or codex.",
+            "LLM role `chat` is not configured. Run `spark setup --chat-llm-provider openai` to use Codex/OpenAI, or choose anthropic, zai, minimax, ollama, or codex.",
             hints,
         )
 
@@ -3984,9 +4004,26 @@ class SparkCliTests(unittest.TestCase):
         self.assertTrue(payload["roles"]["memory"]["ready"])
         self.assertFalse(payload["roles"]["mission"]["ready"])
         self.assertIn(
-            "LLM role `mission` is not configured. Run `spark setup --mission-llm-provider openai` to use Codex/OpenAI, or choose anthropic, zai, ollama, or codex.",
+            "LLM role `mission` is not configured. Run `spark setup --mission-llm-provider openai` to use Codex/OpenAI, or choose anthropic, zai, minimax, ollama, or codex.",
             payload["repair_hints"],
         )
+
+    def test_provider_status_payload_reports_minimax_secret_readiness(self) -> None:
+        setup_state = {
+            "secret_keys": ["llm.minimax.api_key"],
+            "llm": {
+                "provider": "minimax",
+                "roles": {
+                    role: {"provider": "minimax", "model": "MiniMax-M2.7", "auth_mode": "not_configured", "bot_provider": "minimax"}
+                    for role in ("chat", "builder", "memory", "mission")
+                },
+            },
+        }
+        with patch("spark_cli.cli.load_json", return_value=setup_state):
+            payload = provider_status_payload()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["roles"]["chat"]["auth_mode"], "api_key")
+        self.assertEqual(payload["roles"]["mission"]["bot_provider"], "minimax")
 
     def test_provider_status_payload_accepts_legacy_top_level_auth(self) -> None:
         setup_state = {
