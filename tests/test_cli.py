@@ -29,6 +29,7 @@ from spark_cli.cli import (
     configure_telegram_profile,
     cmd_secrets_set,
     cmd_setup,
+    cmd_uninstall,
     cmd_update,
     console_safe_text,
     CONFIG_PATH,
@@ -51,6 +52,7 @@ from spark_cli.cli import (
     pull_module_source,
     remove_tree,
     remove_windows_path_entry,
+    purge_spark_home,
     install_module_record,
     keychain_account,
     keychain_env_for_module,
@@ -1418,6 +1420,42 @@ class SparkCliTests(unittest.TestCase):
     def test_uninstall_accepts_windows_path_cleanup_flag(self) -> None:
         args = build_parser().parse_args(["uninstall", "--remove-user-path"])
         self.assertTrue(args.remove_user_path)
+
+    def test_uninstall_accepts_full_cleanup_flags(self) -> None:
+        args = build_parser().parse_args([
+            "uninstall",
+            "--all",
+            "--remove-autostart",
+            "--remove-user-path",
+            "--purge-home",
+            "--yes",
+        ])
+        self.assertTrue(args.all)
+        self.assertTrue(args.remove_autostart)
+        self.assertTrue(args.remove_user_path)
+        self.assertTrue(args.purge_home)
+        self.assertTrue(args.yes)
+
+    def test_uninstall_purge_home_requires_yes(self) -> None:
+        args = build_parser().parse_args(["uninstall", "--purge-home"])
+        with self.assertRaises(SystemExit):
+            cmd_uninstall(args)
+
+    def test_uninstall_full_cleanup_runs_autostart_path_and_home_cleanup(self) -> None:
+        args = build_parser().parse_args(["uninstall", "--all", "--remove-autostart", "--remove-user-path", "--purge-home", "--yes"])
+        with patch("spark_cli.cli.resolve_installed_target_modules", return_value=[]), \
+             patch("spark_cli.cli.cmd_autostart_uninstall", return_value=0) as autostart, \
+             patch("spark_cli.cli.remove_spark_bin_from_windows_user_path", return_value=True) as user_path, \
+             patch("spark_cli.cli.purge_spark_home", return_value=True) as purge_home, \
+             patch("sys.stdout", new_callable=StringIO):
+            self.assertEqual(cmd_uninstall(args), 0)
+        autostart.assert_called_once()
+        user_path.assert_called_once()
+        purge_home.assert_called_once()
+
+    def test_purge_spark_home_refuses_home_directory(self) -> None:
+        with self.assertRaises(SystemExit):
+            purge_spark_home(Path.home())
 
     def test_guide_prints_normie_onboarding_surface(self) -> None:
         args = build_parser().parse_args(["guide"])

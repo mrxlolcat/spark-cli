@@ -407,6 +407,24 @@ def remove_spark_bin_from_windows_user_path(spark_home: Path = SPARK_HOME) -> bo
     return removed
 
 
+def safe_spark_home_for_purge(spark_home: Path = SPARK_HOME) -> Path:
+    resolved = spark_home.expanduser().resolve()
+    home = Path.home().expanduser().resolve()
+    repo_root = REPO_ROOT.resolve()
+    root = Path(resolved.anchor).resolve()
+    if resolved == root or resolved == home or resolved == repo_root:
+        raise SystemExit(f"Refusing to purge unsafe Spark home path: {resolved}")
+    return resolved
+
+
+def purge_spark_home(spark_home: Path = SPARK_HOME) -> bool:
+    target = safe_spark_home_for_purge(spark_home)
+    if not target.exists():
+        return False
+    remove_tree(target)
+    return True
+
+
 def keychain_namespace() -> str:
     try:
         raw = str(SPARK_HOME.resolve()).lower()
@@ -5337,19 +5355,32 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
+    if getattr(args, "all", False) and args.target:
+        raise SystemExit("Use either a target or --all, not both.")
+    if getattr(args, "purge_home", False) and not getattr(args, "yes", False):
+        raise SystemExit("Refusing to purge Spark home without --yes.")
+
     ensure_state_dirs()
     modules = resolve_installed_target_modules(args.target)
+    if modules:
+        installed_modules = resolve_installed_modules()
+        blockers = detect_uninstall_blockers(modules, installed_modules)
+        if blockers and not args.force:
+            raise SystemExit("Cannot uninstall because other installed modules depend on it: " + "; ".join(blockers))
+
+    failures = 0
+    if getattr(args, "remove_autostart", False):
+        failures += cmd_autostart_uninstall(argparse.Namespace())
+
     if not modules:
         print("No installed Spark modules recorded.")
         if getattr(args, "remove_user_path", False):
             removed = remove_spark_bin_from_windows_user_path()
             print("Removed Spark bin from Windows user PATH." if removed else "Spark bin was not present in Windows user PATH.")
-        return 0
-    installed_modules = resolve_installed_modules()
-    blockers = detect_uninstall_blockers(modules, installed_modules)
-    if blockers and not args.force:
-        raise SystemExit("Cannot uninstall because other installed modules depend on it: " + "; ".join(blockers))
-
+        if getattr(args, "purge_home", False):
+            removed_home = purge_spark_home()
+            print(f"Removed Spark home: {SPARK_HOME}" if removed_home else f"Spark home was not present: {SPARK_HOME}")
+        return 1 if failures else 0
     removed_names: list[str] = []
     for module in modules:
         run_module_hook(module, "pre_uninstall")
@@ -5373,7 +5404,10 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     if getattr(args, "remove_user_path", False):
         removed = remove_spark_bin_from_windows_user_path()
         print("Removed Spark bin from Windows user PATH." if removed else "Spark bin was not present in Windows user PATH.")
-    return 0
+    if getattr(args, "purge_home", False):
+        removed_home = purge_spark_home()
+        print(f"Removed Spark home: {SPARK_HOME}" if removed_home else f"Spark home was not present: {SPARK_HOME}")
+    return 1 if failures else 0
 
 
 def onboarding_guide_payload() -> dict[str, Any]:
@@ -5648,8 +5682,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     uninstall_parser = subparsers.add_parser("uninstall", help="Remove installed modules from Spark state and generated config")
     uninstall_parser.add_argument("target", nargs="?")
+    uninstall_parser.add_argument("--all", action="store_true", help="Uninstall all installed Spark modules")
     uninstall_parser.add_argument("--force", action="store_true")
+    uninstall_parser.add_argument("--remove-autostart", action="store_true", help="Remove OS login autostart hooks")
     uninstall_parser.add_argument("--remove-user-path", action="store_true", help="Remove Spark bin from the Windows user PATH after uninstall")
+    uninstall_parser.add_argument("--purge-home", action="store_true", help="Delete SPARK_HOME after uninstall cleanup")
+    uninstall_parser.add_argument("--yes", action="store_true", help="Confirm destructive cleanup such as --purge-home")
     uninstall_parser.set_defaults(func=cmd_uninstall)
 
     start_parser = subparsers.add_parser("start", help="Start startable modules")
