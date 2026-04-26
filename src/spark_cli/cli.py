@@ -49,6 +49,7 @@ AUTOSTART_WINDOWS_TASK_NAME = "Spark Telegram Agent"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_REGISTRY_PATH = REPO_ROOT / "registry.json"
 DEFAULT_TELEGRAM_PROFILE = "default"
+DEFAULT_PRIMARY_TELEGRAM_PROFILE = "primary"
 PRIMARY_TELEGRAM_PROFILE_KEY = "primary_telegram_profile"
 TELEGRAM_PROFILE_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,38}[a-z0-9]$")
 GIT_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -1085,18 +1086,16 @@ def telegram_profile_should_autostart(profile_state: Any) -> bool:
 def primary_telegram_profile(setup_state: dict[str, Any] | None = None) -> str:
     state = setup_state if isinstance(setup_state, dict) else load_json(CONFIG_PATH, {})
     if not isinstance(state, dict):
-        return DEFAULT_TELEGRAM_PROFILE
+        return DEFAULT_PRIMARY_TELEGRAM_PROFILE
     configured = state.get(PRIMARY_TELEGRAM_PROFILE_KEY)
     if isinstance(configured, str) and configured.strip():
         return normalize_telegram_profile(configured)
     profiles = state.get("telegram_profiles")
     if isinstance(profiles, dict) and profiles:
-        if "spark-agi" in profiles:
-            return "spark-agi"
         for profile in sorted(profiles):
             if isinstance(profiles.get(profile), dict):
                 return normalize_telegram_profile(str(profile))
-    return "spark-agi"
+    return DEFAULT_PRIMARY_TELEGRAM_PROFILE
 
 
 def module_process_key(module_name: str, profile: str | None = None) -> str:
@@ -2731,7 +2730,7 @@ def collect_setup_configuration(
     if isinstance(preserved_primary_profile, str) and preserved_primary_profile.strip():
         setup_state[PRIMARY_TELEGRAM_PROFILE_KEY] = normalize_telegram_profile(preserved_primary_profile)
     else:
-        setup_state[PRIMARY_TELEGRAM_PROFILE_KEY] = "spark-agi"
+        setup_state[PRIMARY_TELEGRAM_PROFILE_KEY] = DEFAULT_PRIMARY_TELEGRAM_PROFILE
     primary_profile_secret = telegram_profile_secret_id(setup_state[PRIMARY_TELEGRAM_PROFILE_KEY], "bot_token")
     if "telegram.bot_token" in secret_values and primary_profile_secret not in secret_values:
         secret_values[primary_profile_secret] = secret_values["telegram.bot_token"]

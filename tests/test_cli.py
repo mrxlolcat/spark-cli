@@ -335,18 +335,18 @@ class SparkCliTests(unittest.TestCase):
 
         self.assertEqual(primary_telegram_profile(setup_state), "qa-bot")
 
-    def test_primary_telegram_profile_prefers_spark_agi_when_present(self) -> None:
+    def test_primary_telegram_profile_prefers_first_named_profile_when_no_primary_is_configured(self) -> None:
         setup_state = {
             "telegram_profiles": {
                 "qa-bot": {"relay_port": 8790},
-                "spark-agi": {"relay_port": 8789},
+                "prod-bot": {"relay_port": 8789},
             }
         }
 
-        self.assertEqual(primary_telegram_profile(setup_state), "spark-agi")
+        self.assertEqual(primary_telegram_profile(setup_state), "prod-bot")
 
-    def test_primary_telegram_profile_defaults_to_spark_agi(self) -> None:
-        self.assertEqual(primary_telegram_profile({}), "spark-agi")
+    def test_primary_telegram_profile_defaults_to_neutral_primary_profile(self) -> None:
+        self.assertEqual(primary_telegram_profile({}), "primary")
 
     def test_next_telegram_profile_relay_port_skips_existing_ports(self) -> None:
         setup_state = {"telegram_profiles": {"qa": {"relay_port": 8789}, "agi": {"relay_port": "8790"}}}
@@ -1623,8 +1623,8 @@ class SparkCliTests(unittest.TestCase):
             )
             expected_builder_home = state_dir / "spark-intelligence"
             self.assertEqual(setup_state["builder_home"], str(expected_builder_home))
-            self.assertEqual(setup_state["primary_telegram_profile"], "spark-agi")
-            self.assertIn("telegram.profiles.spark-agi.bot_token", setup_state["secret_keys"])
+            self.assertEqual(setup_state["primary_telegram_profile"], "primary")
+            self.assertIn("telegram.profiles.primary.bot_token", setup_state["secret_keys"])
             self.assertTrue(expected_builder_home.exists())
 
             gateway_env = (module_config_dir / "spark-telegram-bot.env").read_text(encoding="utf-8")
@@ -1637,7 +1637,7 @@ class SparkCliTests(unittest.TestCase):
             self.assertIn("SPARK_BUILDER_BRIDGE_MODE=required", gateway_env)
             self.assertIn("SPAWNER_UI_URL=http://127.0.0.1:5173", gateway_env)
             self.assertIn("TELEGRAM_RELAY_PORT=8788", gateway_env)
-            self.assertIn("SPARK_TELEGRAM_PROFILE=spark-agi", gateway_env)
+            self.assertIn("SPARK_TELEGRAM_PROFILE=primary", gateway_env)
             self.assertIn("LLM_PROVIDER=zai", gateway_env)
             self.assertNotIn("ZAI_API_KEY=zai-test-key", gateway_env)
             self.assertIn("ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4/", gateway_env)
@@ -1663,7 +1663,7 @@ class SparkCliTests(unittest.TestCase):
             secrets_index = load_json(config_dir / "secrets_index.json", {})
             secrets_file = load_json(config_dir / "secrets.local.json", {})
             self.assertEqual(secrets_index["telegram.relay_secret"], "file")
-            self.assertEqual(secrets_index["telegram.profiles.spark-agi.bot_token"], "file")
+            self.assertEqual(secrets_index["telegram.profiles.primary.bot_token"], "file")
             self.assertIn("telegram.relay_secret", secrets_file)
 
     def test_split_telegram_admin_ids_trims_and_deduplicates(self) -> None:
