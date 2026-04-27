@@ -4188,6 +4188,92 @@ def cmd_status(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def cmd_live(args: argparse.Namespace) -> int:
+    command = getattr(args, "live_command", "status")
+    if command == "start":
+        args.target = "telegram-starter"
+        args.profile = DEFAULT_TELEGRAM_PROFILE
+        args.allow_boot_warnings = False
+        return cmd_start(args)
+    if command == "stop":
+        args.target = "telegram-starter"
+        args.profile = DEFAULT_TELEGRAM_PROFILE
+        args.cascade = True
+        return cmd_stop(args)
+    if command == "restart":
+        args.target = "telegram-starter"
+        args.profile = DEFAULT_TELEGRAM_PROFILE
+        args.cascade = True
+        args.allow_boot_warnings = False
+        return cmd_restart(args)
+    if command == "logs":
+        targets = ["spawner-ui", "spark-telegram-bot"]
+        for index, target in enumerate(targets):
+            if index:
+                print("")
+            print(f"== {target} ==")
+            args.target = target
+            args.profile = DEFAULT_TELEGRAM_PROFILE
+            args.lines = getattr(args, "lines", 80)
+            args.follow = False
+            try:
+                cmd_logs(args)
+            except SystemExit as exc:
+                print(str(exc))
+        return 0
+    if command == "status":
+        return cmd_live_status(args)
+    raise SystemExit(f"Unknown live command: {command}")
+
+
+def cmd_live_status(args: argparse.Namespace) -> int:
+    payload = collect_status_payload()
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return 0 if payload.get("ok") else 1
+    print("Spark Live")
+    print("One surface for Telegram, Mission Control, memory, and provider routing.")
+    print("")
+    if payload.get("ok"):
+        print("[OK] Spark Live is ready.")
+    else:
+        print("[FIX] Spark Live needs attention.")
+    llm_state = payload.get("llm")
+    if isinstance(llm_state, dict):
+        roles = llm_state.get("roles")
+        if isinstance(roles, dict):
+            role_summary = ", ".join(
+                f"{role}={roles.get(role, {}).get('provider', llm_state.get('provider', 'not_configured'))}"
+                for role in LLM_ROLES
+            )
+            print(f"LLM roles: {role_summary}")
+    profiles = payload.get("telegram_profiles")
+    if isinstance(profiles, list) and profiles:
+        running = [item for item in profiles if isinstance(item, dict) and item.get("running")]
+        stopped = [item for item in profiles if isinstance(item, dict) and not item.get("running")]
+        print(f"Telegram profiles: {len(running)} running, {len(stopped)} stopped")
+    modules = payload.get("modules") if isinstance(payload.get("modules"), list) else []
+    for name in ["spawner-ui", "spark-telegram-bot", "spark-intelligence-builder", "domain-chip-memory", "spark-researcher", "spark-character"]:
+        module = next((item for item in modules if isinstance(item, dict) and item.get("name") == name), None)
+        if not module:
+            continue
+        healthy = module.get("healthy")
+        marker = "[OK]" if healthy else "[SKIP]" if healthy is None else "[FIX]"
+        print(f"{marker} {name}: {module.get('detail')}")
+    if payload.get("repair_hints"):
+        print("")
+        print("Fix next:")
+        for hint in payload.get("repair_hints", []):
+            print(f"  - {hint}")
+        print("  - For deeper help: spark doctor llm \"Spark Live is not ready\" --save-report")
+    print("")
+    print("Useful:")
+    print("  spark live start")
+    print("  spark live restart")
+    print("  spark live logs")
+    return 0 if payload.get("ok") else 1
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     if getattr(args, "doctor_command", None) == "llm":
         return cmd_doctor_llm(args)
@@ -5343,6 +5429,29 @@ def resolve_stop_module_names(target: str | None, installed_modules: dict[str, M
     return expanded_ordered_names + sorted(extra_names)
 
 
+def resolve_exact_stop_module_names(target: str | None, installed_modules: dict[str, Module], tracked_pids: dict[str, Any]) -> list[str]:
+    if not tracked_pids:
+        return []
+    if target is None:
+        return resolve_stop_module_names(target, installed_modules, tracked_pids)
+    requested_names = expand_targets(target, installed_modules, include_all=True)
+    ordered_names = [
+        module.name
+        for module in topologically_sort_modules(
+            {name: installed_modules[name] for name in requested_names if name in installed_modules}
+        )
+    ]
+    expanded_ordered_names: list[str] = []
+    for name in reversed(ordered_names):
+        if name == "spark-telegram-bot":
+            tracked_bot_keys = tracked_process_keys_for_module(tracked_pids, "spark-telegram-bot")
+            expanded_ordered_names.extend(tracked_bot_keys or [name])
+        else:
+            expanded_ordered_names.append(name)
+    extra_names = [name for name in requested_names if name not in installed_modules]
+    return expanded_ordered_names + sorted(extra_names)
+
+
 def resolve_restart_modules(target: str | None, installed_modules: dict[str, Module], tracked_pids: dict[str, Any]) -> list[Module]:
     requested_names = expand_targets(target, installed_modules, include_all=True)
     restart_names = set(requested_names)
@@ -5835,7 +5944,10 @@ def cmd_stop(args: argparse.Namespace) -> int:
             return 0
         target_names = [module_process_key("spark-telegram-bot", profile)]
     else:
-        target_names = resolve_stop_module_names(args.target, installed_modules, pids)
+        if getattr(args, "cascade", False):
+            target_names = resolve_stop_module_names(args.target, installed_modules, pids)
+        else:
+            target_names = resolve_exact_stop_module_names(args.target, installed_modules, pids)
     for name in target_names:
         if not stop_tracked_process_key(name):
             print(f"Skipping {name}: no tracked pid")
@@ -5864,7 +5976,11 @@ def cmd_restart(args: argparse.Namespace) -> int:
             ):
                 start_code = 1
             return start_code or stop_code
-    restart_modules = resolve_restart_modules(args.target, installed_modules, load_pids())
+    restart_modules = (
+        resolve_restart_modules(args.target, installed_modules, load_pids())
+        if getattr(args, "cascade", False)
+        else resolve_start_modules(args.target, installed_modules)
+    )
     stop_code = cmd_stop(args)
     start_code = 0
     for module in restart_modules:
@@ -7141,13 +7257,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop_parser = subparsers.add_parser("stop", help="Stop tracked Spark processes")
     stop_parser.add_argument("--profile", default=DEFAULT_TELEGRAM_PROFILE, help="Named Telegram bot profile to stop")
+    stop_parser.add_argument("--cascade", action="store_true", help="Also stop running modules that depend on the target")
     stop_parser.add_argument("target", nargs="?")
     stop_parser.set_defaults(func=cmd_stop)
 
     restart_parser = subparsers.add_parser("restart", help="Restart startable modules")
     restart_parser.add_argument("--profile", default=DEFAULT_TELEGRAM_PROFILE, help="Named Telegram bot profile to restart")
+    restart_parser.add_argument("--cascade", action="store_true", help="Also restart running modules that depend on the target")
     restart_parser.add_argument("target", nargs="?")
     restart_parser.set_defaults(func=cmd_restart)
+
+    live_parser = subparsers.add_parser("live", help="Control Spark Live, the friendly always-on agent surface")
+    live_subparsers = live_parser.add_subparsers(dest="live_command")
+    live_status_parser = live_subparsers.add_parser("status", help="Show Spark Live readiness")
+    live_status_parser.add_argument("--json", action="store_true")
+    live_status_parser.set_defaults(func=cmd_live)
+    live_start_parser = live_subparsers.add_parser("start", help="Start Spark Live")
+    live_start_parser.set_defaults(func=cmd_live)
+    live_restart_parser = live_subparsers.add_parser("restart", help="Restart Spark Live")
+    live_restart_parser.set_defaults(func=cmd_live)
+    live_stop_parser = live_subparsers.add_parser("stop", help="Stop Spark Live")
+    live_stop_parser.set_defaults(func=cmd_live)
+    live_logs_parser = live_subparsers.add_parser("logs", help="Show Spark Live logs")
+    live_logs_parser.add_argument("-n", "--lines", type=int, default=80)
+    live_logs_parser.set_defaults(func=cmd_live)
+    live_parser.set_defaults(func=cmd_live, live_command="status")
 
     autostart_parser = subparsers.add_parser("autostart", help="Start Spark automatically when this computer logs in")
     autostart_subparsers = autostart_parser.add_subparsers(dest="autostart_command", required=True)

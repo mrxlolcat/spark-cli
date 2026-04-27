@@ -34,6 +34,7 @@ from spark_cli.cli import (
     collect_verify_payload,
     configure_telegram_profile,
     cmd_secrets_set,
+    cmd_live,
     cmd_setup,
     cmd_uninstall,
     cmd_update,
@@ -180,6 +181,7 @@ from spark_cli.cli import (
     resolve_install_target,
     resolve_restart_modules,
     resolve_start_modules,
+    resolve_exact_stop_module_names,
     resolve_stop_module_names,
     render_launch_agent_plist,
     render_systemd_autostart_unit,
@@ -2579,6 +2581,52 @@ class SparkCliTests(unittest.TestCase):
         )
 
         self.assertEqual([module.name for module in ordered], ["spawner-ui", "spark-telegram-bot"])
+
+    def test_resolve_exact_stop_module_names_does_not_stop_dependents(self) -> None:
+        spawner = Module(
+            name="spawner-ui",
+            path=Path("C:/tmp/spawner-ui"),
+            manifest={
+                "module": {"name": "spawner-ui", "version": "0.0.1", "kind": "app", "plane": "execution"},
+                "run": {"default": {"command": "npm run dev"}},
+            },
+        )
+        gateway = Module(
+            name="spark-telegram-bot",
+            path=Path("C:/tmp/spark-telegram-bot"),
+            manifest={
+                "module": {"name": "spark-telegram-bot", "version": "1.0.0", "kind": "service", "plane": "ingress"},
+                "needs": {"modules": ["spawner-ui"]},
+                "run": {"default": {"command": "npm run dev"}},
+            },
+        )
+        modules = {gateway.name: gateway, spawner.name: spawner}
+
+        ordered = resolve_exact_stop_module_names(
+            "spawner-ui",
+            modules,
+            {
+                gateway.name: {"pid": 100},
+                spawner.name: {"pid": 200},
+            },
+        )
+
+        self.assertEqual(ordered, ["spawner-ui"])
+
+    def test_live_restart_targets_starter_bundle_with_cascade(self) -> None:
+        args = build_parser().parse_args(["live", "restart"])
+
+        with patch("spark_cli.cli.cmd_restart", return_value=0) as restart:
+            self.assertEqual(cmd_live(args), 0)
+
+        live_args = restart.call_args.args[0]
+        self.assertEqual(live_args.target, "telegram-starter")
+        self.assertTrue(live_args.cascade)
+
+    def test_live_status_defaults_when_no_subcommand_is_given(self) -> None:
+        args = build_parser().parse_args(["live"])
+
+        self.assertEqual(args.live_command, "status")
 
     def test_collect_secret_requirements_maps_manifest_secret_blocks(self) -> None:
         module = Module(
