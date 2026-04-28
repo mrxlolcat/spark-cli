@@ -84,7 +84,10 @@ SAFE_PARENT_ENV_KEYS = {
     "LOCALAPPDATA",
     "PATH",
     "PATHEXT",
+    "PORT",
     "SHELL",
+    "SPARK_SPAWNER_HOST",
+    "SPARK_SPAWNER_PORT",
     "SYSTEMDRIVE",
     "SYSTEMROOT",
     "TEMP",
@@ -2751,9 +2754,10 @@ def telegram_profile_webhook_urls(setup_state: dict[str, Any] | None = None) -> 
 
 def default_telegram_webhook_url(spawner_ui_url: str | None) -> str:
     relay_base = spawner_ui_url or "http://127.0.0.1:5173"
-    if relay_base.endswith(":5173"):
-        relay_base = relay_base[:-4] + "8788"
-    return f"{relay_base}/spawner-events"
+    parsed = urllib.parse.urlparse(relay_base)
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or "127.0.0.1"
+    return f"{scheme}://{host}:8788/spawner-events"
 
 
 def build_module_envs(args: argparse.Namespace, modules_by_name: dict[str, Module], secret_values: dict[str, str]) -> dict[str, dict[str, str]]:
@@ -6649,8 +6653,9 @@ def wait_for_ready_check(
     process: subprocess.Popen[Any] | None = None,
     *,
     profile: str | None = None,
+    ready_check_override: str | None = None,
 ) -> tuple[bool, str]:
-    ready_check = module.ready_check
+    ready_check = ready_check_override or module.ready_check
     if not ready_check:
         return True, "no ready check declared"
 
@@ -6818,6 +6823,13 @@ def module_runtime_listener_ports(module: Module, profile: str | None = None) ->
             return [int(raw_port)]
         except (TypeError, ValueError):
             return [8788]
+    if module.name == "spawner-ui":
+        raw_port = module_runtime_env(module, profile).get("SPARK_SPAWNER_PORT")
+        if raw_port:
+            try:
+                return [int(raw_port)]
+            except (TypeError, ValueError):
+                return []
     ready_check = module.ready_check or ""
     if ready_check.startswith(("http://", "https://")):
         parsed = urllib.parse.urlparse(ready_check)
@@ -6863,6 +6875,41 @@ def process_runtime_detail(pids: dict[str, Any], module_names: list[str]) -> tup
     if running_names:
         return False, "Missing Spark-supervised runtime process(es): " + ", ".join(missing) + f". Running: {', '.join(running_names)}."
     return False, "Missing Spark-supervised runtime process(es): " + ", ".join(missing) + "."
+
+
+def replace_or_append_flag(argv: list[str], flag: str, value: str) -> list[str]:
+    updated = list(argv)
+    try:
+        index = updated.index(flag)
+    except ValueError:
+        updated.extend([flag, value])
+        return updated
+    if index + 1 < len(updated):
+        updated[index + 1] = value
+    else:
+        updated.append(value)
+    return updated
+
+
+def module_runtime_command_argv(module: Module, command: str, cwd: Path, env: dict[str, str]) -> list[str]:
+    argv = direct_node_package_script_argv(command, cwd) or runtime_command_argv(command)
+    if module.name != "spawner-ui":
+        return argv
+    bind_host = (env.get("SPARK_SPAWNER_HOST") or "").strip()
+    bind_port = (env.get("SPARK_SPAWNER_PORT") or "").strip()
+    if bind_host:
+        argv = replace_or_append_flag(argv, "--host", bind_host)
+    if bind_port:
+        argv = replace_or_append_flag(argv, "--port", bind_port)
+    return argv
+
+
+def module_runtime_ready_check(module: Module, env: dict[str, str]) -> str:
+    if module.name == "spawner-ui":
+        bind_port = (env.get("SPARK_SPAWNER_PORT") or "").strip()
+        if bind_port:
+            return f"http://127.0.0.1:{bind_port}/api/providers"
+    return module.ready_check
 
 
 def expected_runtime_process_names(installed_names: set[str], setup_state: dict[str, Any]) -> list[str]:
@@ -6935,7 +6982,8 @@ def start_module(module: Module, *, allow_boot_warnings: bool = False, profile: 
     )
 
     subprocess_env = module_runtime_env(module, profile)
-    argv = direct_node_package_script_argv(command, module.path) or runtime_command_argv(command)
+    argv = module_runtime_command_argv(module, command, module.path, subprocess_env)
+    ready_check = module_runtime_ready_check(module, subprocess_env)
     popen_kwargs: dict[str, Any] = {
         "cwd": str(module.path),
         "shell": False,
@@ -6971,11 +7019,11 @@ def start_module(module: Module, *, allow_boot_warnings: bool = False, profile: 
             "path": str(module.path),
             "started_at": timestamp_now(),
             "log_path": str(log_path),
-            "ready_check": module.ready_check,
+            "ready_check": ready_check,
         }
         save_pids(pids)
     print(f"Started {display_name} (pid {process.pid})")
-    ready, detail = wait_for_ready_check(module, process=process, profile=profile)
+    ready, detail = wait_for_ready_check(module, process=process, profile=profile, ready_check_override=ready_check)
     if ready:
         runtime_pid = discover_runtime_pid(module, process, profile)
         update_tracked_runtime_pid(process_key, process.pid, runtime_pid)

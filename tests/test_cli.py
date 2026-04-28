@@ -79,7 +79,9 @@ from spark_cli.cli import (
     module_log_path,
     live_log_targets,
     module_process_key,
+    module_runtime_command_argv,
     module_runtime_env,
+    module_runtime_ready_check,
     module_secret_env_bindings,
     module_trust_tier,
     next_telegram_profile_relay_port,
@@ -3255,6 +3257,49 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(envs["spark-intelligence-builder"]["SPARK_LLM_PROVIDER"], "not_configured")
         self.assertNotIn("SPARK_SPARK_LLM_PROVIDER", envs["spark-intelligence-builder"])
 
+    def test_build_module_envs_keeps_relay_url_on_relay_port_when_spawner_port_changes(self) -> None:
+        gateway = make_module("spark-telegram-bot", ["telegram.ingress"])
+        builder = make_module("spark-intelligence-builder", ["spark.runtime"])
+        spawner = make_module("spawner-ui", ["mission.execution"])
+
+        class Args:
+            llm_provider = None
+            agent_llm_provider = None
+            chat_llm_provider = None
+            builder_llm_provider = None
+            memory_llm_provider = None
+            mission_llm_provider = None
+            zai_model = "glm-5.1"
+            zai_base_url = "https://api.z.ai/api/coding/paas/v4/"
+            minimax_model = "MiniMax-M2.7"
+            minimax_base_url = "https://api.minimax.io/v1"
+            openai_model = "gpt-5.5"
+            openai_base_url = "https://api.openai.com/v1"
+            anthropic_model = "claude-sonnet-4-7"
+            codex_model = "gpt-5.5"
+            openrouter_model = "openai/gpt-5.5"
+            openrouter_base_url = "https://openrouter.ai/api/v1"
+            kimi_model = "kimi-k2.6"
+            kimi_base_url = "https://api.moonshot.ai/v1"
+            huggingface_model = "google/gemma-4-26B-A4B-it:fastest"
+            huggingface_base_url = "https://router.huggingface.co/v1"
+            lmstudio_model = "local-model"
+            lmstudio_base_url = "http://localhost:1234/v1"
+            ollama_model = "llama3.2:3b"
+            ollama_url = "http://localhost:11434"
+            spawner_ui_url = "http://127.0.0.1:8080"
+            telegram_relay_secret = None
+
+        with patch("spark_cli.cli.load_json", return_value={}):
+            envs = build_module_envs(
+                Args(),
+                {gateway.name: gateway, builder.name: builder, spawner.name: spawner},
+                {"telegram.bot_token": "abc", "telegram.admin_ids": "123"},
+            )
+
+        self.assertEqual(envs["spark-telegram-bot"]["SPAWNER_UI_URL"], "http://127.0.0.1:8080")
+        self.assertEqual(envs["spawner-ui"]["MISSION_CONTROL_WEBHOOK_URLS"], "http://127.0.0.1:8788/spawner-events")
+
     def test_build_module_envs_uses_configured_telegram_profile_webhooks(self) -> None:
         gateway = make_module("spark-telegram-bot", ["telegram.ingress"])
         builder = make_module("spark-intelligence-builder", ["spark.runtime"])
@@ -3935,6 +3980,36 @@ class SparkCliTests(unittest.TestCase):
                     direct_node_package_script_argv("npm run dev -- --host 127.0.0.1", root),
                     ["C:/node/node.exe", str(vite_bin), "dev", "--host", "127.0.0.1"],
                 )
+
+    def test_spawner_runtime_command_uses_container_bind_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            vite_bin = root / "node_modules" / "vite" / "bin" / "vite.js"
+            vite_bin.parent.mkdir(parents=True)
+            vite_bin.write_text("", encoding="utf-8")
+            (root / "package.json").write_text(json.dumps({"scripts": {"dev": "vite dev"}}), encoding="utf-8")
+            module = Module(
+                name="spawner-ui",
+                path=root,
+                manifest={
+                    "module": {"name": "spawner-ui", "version": "0.0.1", "kind": "app", "plane": "execution"},
+                    "run": {"default": {"command": "npm run dev -- --host 127.0.0.1", "ready_check": "http://127.0.0.1:5173/api/providers"}},
+                },
+            )
+
+            with patch("spark_cli.cli.resolve_runtime_binary", return_value="C:/node/node.exe"):
+                argv = module_runtime_command_argv(
+                    module,
+                    "npm run dev -- --host 127.0.0.1",
+                    root,
+                    {"SPARK_SPAWNER_HOST": "0.0.0.0", "SPARK_SPAWNER_PORT": "8080"},
+                )
+
+            self.assertEqual(argv, ["C:/node/node.exe", str(vite_bin), "dev", "--host", "0.0.0.0", "--port", "8080"])
+            self.assertEqual(
+                module_runtime_ready_check(module, {"SPARK_SPAWNER_PORT": "8080"}),
+                "http://127.0.0.1:8080/api/providers",
+            )
 
     def test_direct_node_package_script_argv_resolves_ts_node_without_cmd_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

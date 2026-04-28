@@ -401,11 +401,20 @@ bash scripts/docker-sandbox-run.sh --help
 Windows PowerShell wrappers are available at `scripts/docker-dev-smoke.ps1` and `scripts/docker-sandbox-run.ps1`.
 See [docs/OPTIONAL_DOCKER_WORKBENCH.md](./docs/OPTIONAL_DOCKER_WORKBENCH.md) for the full opt-in workflow and safety rules.
 
+Realtime hosted sandbox agents can use the Spark Live container lane:
+
+```bash
+docker build -f docker/live/Dockerfile -t spark-live:local .
+```
+
+See [docs/SPARK_LIVE_DOCKER_RAILWAY.md](./docs/SPARK_LIVE_DOCKER_RAILWAY.md) for Docker, Railway, and VPS setup notes.
+
 ## More Docs
 
 - [docs/SPARK_ECOSYSTEM_LAUNCH.md](./docs/SPARK_ECOSYSTEM_LAUNCH.md) - public launch contract
 - [docs/SPARK_MAINTAINABILITY_GOVERNANCE_2026-04-26.md](./docs/SPARK_MAINTAINABILITY_GOVERNANCE_2026-04-26.md) - cross-repo maintainability rules, redlines, and session protocol
 - [docs/OPTIONAL_DOCKER_WORKBENCH.md](./docs/OPTIONAL_DOCKER_WORKBENCH.md) - optional Docker dev and sandbox workbench
+- [docs/SPARK_LIVE_DOCKER_RAILWAY.md](./docs/SPARK_LIVE_DOCKER_RAILWAY.md) - realtime Spark Live container lane for Docker, Railway, and VPS sandboxes
 - [docs/SPARK_NORMIE_ONBOARDING_AND_GATEWAY_TEST.md](./docs/SPARK_NORMIE_ONBOARDING_AND_GATEWAY_TEST.md) - step-by-step install and real-time Telegram gateway test
 - [docs/LAUNCH_RUNBOOK.md](./docs/LAUNCH_RUNBOOK.md) - release-day verification
 - [docs/LAUNCH_SECURITY_AUDIT_2026-04-24.md](./docs/LAUNCH_SECURITY_AUDIT_2026-04-24.md) - launch security audit

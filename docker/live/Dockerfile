@@ -1,0 +1,42 @@
+FROM node:22-bookworm-slim
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        git \
+        python3 \
+        python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash spark \
+    && mkdir -p /opt/spark-cli /opt/spark-venv /data/spark \
+    && chown -R spark:spark /opt/spark-cli /opt/spark-venv /data/spark
+
+USER spark
+WORKDIR /opt/spark-cli
+
+COPY --chown=spark:spark pyproject.toml README.md LICENSE registry.json ./
+COPY --chown=spark:spark schemas ./schemas
+COPY --chown=spark:spark scripts ./scripts
+COPY --chown=spark:spark src ./src
+COPY --chown=spark:spark docker/live/entrypoint.sh /usr/local/bin/spark-live-entrypoint
+
+RUN python3 -m venv /opt/spark-venv \
+    && /opt/spark-venv/bin/python -m pip install --upgrade pip \
+    && /opt/spark-venv/bin/python -m pip install -e . \
+    && chmod +x /usr/local/bin/spark-live-entrypoint
+
+ENV HOME=/home/spark \
+    PATH=/opt/spark-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    SPARK_HOME=/data/spark \
+    SPARK_LIVE_CONTAINER=1 \
+    SPARK_SPAWNER_HOST=0.0.0.0 \
+    SPARK_SPAWNER_PORT=5173
+
+EXPOSE 5173
+
+ENTRYPOINT ["spark-live-entrypoint"]
