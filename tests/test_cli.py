@@ -1635,14 +1635,14 @@ class SparkCliTests(unittest.TestCase):
                 "OPENROUTER_API_KEY": "or-secret",
                 "TELEGRAM_RELAY_SECRET": "relay-secret",
                 "SPARK_CHAT_LLM_PROVIDER": "huggingface",
-                "HUGGINGFACE_MODEL": "deepseek-ai/DeepSeek-R1:fastest",
+                "HUGGINGFACE_MODEL": "google/gemma-4-26B-A4B-it:fastest",
             }
         )
         self.assertNotIn("HF_TOKEN", metadata)
         self.assertNotIn("OPENROUTER_API_KEY", metadata)
         self.assertNotIn("TELEGRAM_RELAY_SECRET", metadata)
         self.assertEqual(metadata["SPARK_CHAT_LLM_PROVIDER"], "huggingface")
-        self.assertEqual(metadata["HUGGINGFACE_MODEL"], "deepseek-ai/DeepSeek-R1:fastest")
+        self.assertEqual(metadata["HUGGINGFACE_MODEL"], "google/gemma-4-26B-A4B-it:fastest")
 
     def test_build_llm_env_only_exports_selected_provider_secrets(self) -> None:
         args = build_parser().parse_args(["setup", "--non-interactive", "--llm-provider", "openrouter"])

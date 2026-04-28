@@ -2083,7 +2083,7 @@ LLM_PROVIDER_ENV: dict[str, dict[str, str]] = {
         "base_url_default": "https://router.huggingface.co/v1",
         "model_arg": "huggingface_model",
         "model_env": "HUGGINGFACE_MODEL",
-        "model_default": "deepseek-ai/DeepSeek-R1:fastest",
+        "model_default": "google/gemma-4-26B-A4B-it:fastest",
         "bot_provider": "huggingface",
     },
     "zai": {
@@ -8031,7 +8031,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--openrouter-model", default="openai/gpt-5.5")
     setup_parser.add_argument("--huggingface-api-key", help="Hugging Face token, @clipboard, @env:NAME, or @file:path")
     setup_parser.add_argument("--huggingface-base-url", default="https://router.huggingface.co/v1")
-    setup_parser.add_argument("--huggingface-model", default="deepseek-ai/DeepSeek-R1:fastest")
+    setup_parser.add_argument("--huggingface-model", default="google/gemma-4-26B-A4B-it:fastest")
     setup_parser.add_argument("--minimax-api-key", help="MiniMax API key, @clipboard, @env:NAME, or @file:path")
     setup_parser.add_argument("--minimax-base-url", default="https://api.minimax.io/v1")
     setup_parser.add_argument("--minimax-model", default="MiniMax-M2.7")
