@@ -2115,7 +2115,7 @@ LLM_PROVIDER_ENV: dict[str, dict[str, str]] = {
         "model_arg": "openai_model",
         "model_env": "OPENAI_MODEL",
         "model_default": "gpt-5.5",
-        "bot_provider": "codex",
+        "bot_provider": "openai",
     },
     "anthropic": {
         "api_key_secret": "llm.anthropic.api_key",
@@ -2183,7 +2183,7 @@ LLM_PROVIDER_LABELS = {
     "ollama": "Ollama local",
 }
 LLM_PROVIDER_AUTH_HINTS = {
-    "openai": "signed-in Codex CLI, OPENAI_API_KEY, or local OpenAI-compatible server",
+    "openai": "OPENAI_API_KEY or local OpenAI-compatible server",
     "codex": "signed-in Codex CLI",
     "anthropic": "Claude Code `claude -p` sign-in path or ANTHROPIC_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
@@ -2200,7 +2200,7 @@ def describe_llm_provider_setup(provider: str) -> str:
     auth_hint = LLM_PROVIDER_AUTH_HINTS[provider]
     status = ""
     if provider == "openai":
-        status = "ChatGPT/Codex sign-in detected" if detect_codex_cli()["present"] else "use OPENAI_API_KEY, run `codex` to sign in, or point --openai-base-url at LM Studio"
+        status = "use OPENAI_API_KEY, or point --openai-base-url at an OpenAI-compatible server"
     elif provider == "codex":
         status = "Codex CLI detected" if detect_codex_cli()["present"] else "run `codex` to sign in first"
     elif provider == "anthropic":
@@ -2232,7 +2232,7 @@ def provider_requires_wizard_api_key(provider: str) -> bool:
     if provider in {"zai", "minimax", "openrouter", "huggingface"}:
         return True
     if provider == "openai":
-        return not detect_codex_cli()["present"]
+        return True
     if provider == "anthropic":
         return not detect_claude_code()["present"]
     return False
@@ -2301,16 +2301,22 @@ def collect_provider_api_keys(providers: list[str], secret_values: dict[str, str
 def run_llm_provider_wizard(args: argparse.Namespace, secret_values: dict[str, str]) -> dict[str, str]:
     if setup_has_llm_provider_selection(args):
         return collect_provider_api_keys(selected_llm_providers(args, secret_values), secret_values)
+    recommended_provider = "codex" if detect_codex_cli()["present"] else "openai"
+    recommended_index = LLM_PROVIDER_WIZARD_ORDER.index(recommended_provider) + 1
+    recommended_label = LLM_PROVIDER_LABELS[recommended_provider]
     print("")
     print("Choose your Spark brain")
     print("  This one provider powers chat, Builder, memory, retrieval, and Spawner missions.")
     print("  You can split providers later with the role-specific flags if you want advanced control.")
-    print("  Press Enter for the recommended OpenAI/Codex path, or type a number/provider name.")
+    print(f"  Press Enter for the recommended {recommended_label} path, or type a number/provider name.")
     for index, provider in enumerate(LLM_PROVIDER_WIZARD_ORDER, start=1):
-        suffix = " [recommended]" if provider == "openai" else ""
+        suffix = " [recommended]" if provider == recommended_provider else ""
         print(f"  {index}. {describe_llm_provider_setup(provider)}{suffix}")
     print("  0. Skip for now")
-    provider = prompt_for_provider_choice("Spark brain [1/OpenAI, 0 to skip]: ", "openai")
+    provider = prompt_for_provider_choice(
+        f"Spark brain [{recommended_index}/{recommended_label}, 0 to skip]: ",
+        recommended_provider,
+    )
     if provider is None:
         return secret_values
     if provider == "not_configured":
@@ -2398,8 +2404,6 @@ def provider_auth_mode(provider: str, env: dict[str, str]) -> str:
         base_kind = openai_base_url_kind(env.get("OPENAI_BASE_URL"))
         if base_kind == "local":
             return "local"
-        if base_kind == "default" and detect_codex_cli()["present"]:
-            return "codex_oauth"
         return "not_configured"
     if provider == "anthropic" and detect_claude_code()["present"]:
         return "claude_oauth"
@@ -3665,7 +3669,7 @@ def build_llm_repair_hints(llm_state: dict[str, Any], *, secret_keys: set[str] |
         role_flag = "--llm-provider" if role == "all" else f"--{role}-llm-provider"
         if provider == "not_configured":
             hints.append(
-                f"{role_label} is not configured. Run `spark setup {role_flag} openai` to use Codex/OpenAI, or choose anthropic, openrouter, zai, minimax, huggingface, ollama, or codex."
+                f"{role_label} is not configured. Run `spark setup {role_flag} codex` for ChatGPT/Codex sign-in, or choose openai, anthropic, openrouter, zai, minimax, huggingface, lmstudio, or ollama."
             )
         elif provider in {"zai", "minimax", "openrouter", "huggingface"} and auth_mode == "not_configured":
             label = LLM_PROVIDER_LABELS.get(provider, provider)
@@ -3682,7 +3686,7 @@ def build_llm_repair_hints(llm_state: dict[str, Any], *, secret_keys: set[str] |
             )
         elif provider == "openai" and auth_mode == "not_configured":
             hints.append(
-                f"{role_label} uses OpenAI but neither Codex CLI OAuth nor OPENAI_API_KEY is configured. Run `codex` to sign in with ChatGPT, or rerun `spark setup {role_flag} openai --openai-api-key <key>`."
+                f"{role_label} uses OpenAI but OPENAI_API_KEY is not configured. Rerun `spark setup {role_flag} openai --openai-api-key <key>`, or use `spark setup {role_flag} codex` for ChatGPT/Codex sign-in."
             )
         elif provider == "codex" and auth_mode == "not_configured":
             hints.append(

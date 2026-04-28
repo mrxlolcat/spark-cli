@@ -1691,6 +1691,26 @@ class SparkCliTests(unittest.TestCase):
             self.assertEqual(env[f"SPARK_{role}_LLM_MODEL"], "loaded-local-model")
             self.assertEqual(env[f"SPARK_{role}_LLM_AUTH_MODE"], "local")
 
+    def test_build_llm_env_uses_one_provider_for_agent_and_mission_routes(self) -> None:
+        expected_bot_providers = {
+            "anthropic": "claude",
+            "codex": "codex",
+            "huggingface": "huggingface",
+            "lmstudio": "lmstudio",
+            "minimax": "minimax",
+            "ollama": "ollama",
+            "openai": "openai",
+            "openrouter": "openrouter",
+            "zai": "zai",
+        }
+        for provider, bot_provider in expected_bot_providers.items():
+            with self.subTest(provider=provider):
+                args = build_parser().parse_args(["setup", "--non-interactive", "--llm-provider", provider])
+                _, env = build_llm_env(args, {})
+                for role in ("CHAT", "BUILDER", "MEMORY", "MISSION"):
+                    self.assertEqual(env[f"SPARK_{role}_LLM_PROVIDER"], provider)
+                    self.assertEqual(env[f"SPARK_{role}_LLM_BOT_PROVIDER"], bot_provider)
+
     def test_resolve_llm_roles_keeps_explicit_mission_provider(self) -> None:
         args = build_parser().parse_args(
             [
@@ -3160,6 +3180,7 @@ class SparkCliTests(unittest.TestCase):
                     "telegram.bot_token": "abc",
                     "telegram.admin_ids": "123",
                     "llm.zai.api_key": "zai-key",
+                    "llm.openai.api_key": "openai-key",
                 },
             )
 
@@ -3210,6 +3231,7 @@ class SparkCliTests(unittest.TestCase):
                     "telegram.bot_token": "abc",
                     "telegram.admin_ids": "123",
                     "llm.zai.api_key": "zai-key",
+                    "llm.openai.api_key": "openai-key",
                 },
             )
 
@@ -3220,15 +3242,15 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(gateway_env["SPARK_CHAT_LLM_AUTH_MODE"], "api_key")
         self.assertEqual(gateway_env["SPARK_BUILDER_LLM_PROVIDER"], "openai")
         self.assertEqual(gateway_env["SPARK_BUILDER_LLM_MODEL"], "gpt-5.5")
-        self.assertEqual(gateway_env["SPARK_BUILDER_LLM_AUTH_MODE"], "codex_oauth")
+        self.assertEqual(gateway_env["SPARK_BUILDER_LLM_AUTH_MODE"], "api_key")
         self.assertEqual(gateway_env["SPARK_MEMORY_LLM_PROVIDER"], "ollama")
         self.assertEqual(gateway_env["SPARK_MEMORY_LLM_AUTH_MODE"], "local")
         self.assertEqual(gateway_env["SPARK_MISSION_LLM_PROVIDER"], "openai")
         self.assertEqual(envs["spawner-ui"]["SPARK_BUILDER_LLM_PROVIDER"], "openai")
         self.assertEqual(envs["spark-intelligence-builder"]["SPARK_MEMORY_LLM_PROVIDER"], "ollama")
-        self.assertEqual(envs["spawner-ui"]["DEFAULT_MISSION_PROVIDER"], "codex")
-        self.assertEqual(envs["spawner-ui"]["SPAWNER_PRD_AUTO_PROVIDER"], "codex")
-        self.assertEqual(envs["spawner-ui"]["CODEX_PATH"], "/usr/local/bin/codex")
+        self.assertEqual(envs["spawner-ui"]["DEFAULT_MISSION_PROVIDER"], "openai")
+        self.assertNotIn("SPAWNER_PRD_AUTO_PROVIDER", envs["spawner-ui"])
+        self.assertNotIn("CODEX_PATH", envs["spawner-ui"])
         self.assertNotIn("SPARK_ZAI_API_KEY", envs["spawner-ui"])
         self.assertNotIn("SPARK_OPENAI_API_KEY", envs["spawner-ui"])
         self.assertNotIn("SPARK_SPARK_LLM_PROVIDER", envs["spawner-ui"])
@@ -4355,7 +4377,7 @@ class SparkCliTests(unittest.TestCase):
         self.assertIsNone(args.mission_llm_provider)
         self.assertEqual(values["llm.zai.api_key"], "zai-test-key")
 
-    def test_run_llm_provider_wizard_defaults_to_openai_codex_oauth(self) -> None:
+    def test_run_llm_provider_wizard_defaults_to_codex_when_signed_in(self) -> None:
         class Args:
             llm_provider = None
             chat_llm_provider = None
@@ -4369,15 +4391,15 @@ class SparkCliTests(unittest.TestCase):
              patch("sys.stdout", new_callable=StringIO) as stdout, \
              patch("spark_cli.cli.getpass.getpass") as getpass_mock:
             values = run_llm_provider_wizard(args, {})
-        self.assertEqual(args.llm_provider, "openai")
+        self.assertEqual(args.llm_provider, "codex")
         self.assertEqual(values, {})
         getpass_mock.assert_not_called()
         output = stdout.getvalue()
         self.assertIn("Choose your Spark brain", output)
         self.assertIn("chat, Builder, memory, retrieval, and Spawner missions", output)
-        self.assertIn("recommended OpenAI/Codex path", output)
+        self.assertIn("recommended Codex CLI / ChatGPT sign-in path", output)
         self.assertIn("MiniMax", output)
-        self.assertIn("ChatGPT/Codex sign-in detected", output)
+        self.assertIn("Codex CLI detected", output)
         self.assertIn("--mission-llm-provider", output)
         self.assertNotIn("Role setup", output)
 
@@ -5314,11 +5336,11 @@ class SparkCliTests(unittest.TestCase):
         )
         self.assertEqual([], [hint for hint in hints if "Z.AI" in hint or "missing an API key" in hint])
 
-    def test_build_status_repair_hints_allows_openai_codex_auth(self) -> None:
+    def test_build_status_repair_hints_allows_openai_api_auth(self) -> None:
         hints = build_status_repair_hints(
             {},
             [],
-            {"llm": {"provider": "openai", "api_key_configured": False, "auth_mode": "codex_oauth"}},
+            {"llm": {"provider": "openai", "api_key_configured": True, "auth_mode": "api_key"}},
         )
         self.assertEqual([], [hint for hint in hints if "OpenAI is selected" in hint or "missing an API key" in hint])
 
@@ -5330,7 +5352,7 @@ class SparkCliTests(unittest.TestCase):
                 {"llm": {"provider": "openai", "api_key_configured": False, "auth_mode": "not_configured"}},
             )
         self.assertIn(
-            "LLM provider uses OpenAI but neither Codex CLI OAuth nor OPENAI_API_KEY is configured. Run `codex` to sign in with ChatGPT, or rerun `spark setup --llm-provider openai --openai-api-key <key>`.",
+            "LLM provider uses OpenAI but OPENAI_API_KEY is not configured. Rerun `spark setup --llm-provider openai --openai-api-key <key>`, or use `spark setup --llm-provider codex` for ChatGPT/Codex sign-in.",
             hints,
         )
 
@@ -5355,7 +5377,7 @@ class SparkCliTests(unittest.TestCase):
             hints,
         )
         self.assertIn(
-            "LLM role `chat` is not configured. Run `spark setup --chat-llm-provider openai` to use Codex/OpenAI, or choose anthropic, openrouter, zai, minimax, huggingface, ollama, or codex.",
+            "LLM role `chat` is not configured. Run `spark setup --chat-llm-provider codex` for ChatGPT/Codex sign-in, or choose openai, anthropic, openrouter, zai, minimax, huggingface, lmstudio, or ollama.",
             hints,
         )
 
@@ -5479,7 +5501,7 @@ class SparkCliTests(unittest.TestCase):
         self.assertTrue(payload["roles"]["memory"]["ready"])
         self.assertFalse(payload["roles"]["mission"]["ready"])
         self.assertIn(
-            "LLM role `mission` is not configured. Run `spark setup --mission-llm-provider openai` to use Codex/OpenAI, or choose anthropic, openrouter, zai, minimax, huggingface, ollama, or codex.",
+            "LLM role `mission` is not configured. Run `spark setup --mission-llm-provider codex` for ChatGPT/Codex sign-in, or choose openai, anthropic, openrouter, zai, minimax, huggingface, lmstudio, or ollama.",
             payload["repair_hints"],
         )
 
@@ -5510,7 +5532,7 @@ class SparkCliTests(unittest.TestCase):
                         "model": "google/gemma-4-04b-2",
                         "auth_mode": "not_configured",
                         "base_url": "http://localhost:1234/v1",
-                        "bot_provider": "codex",
+                        "bot_provider": "openai",
                     }
                     for role in ("chat", "builder", "memory", "mission")
                 },
