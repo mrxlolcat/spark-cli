@@ -7,6 +7,7 @@ RUN apt-get update \
         bash \
         ca-certificates \
         git \
+        gosu \
         python3 \
         python3-venv \
     && rm -rf /var/lib/apt/lists/* \
@@ -14,7 +15,6 @@ RUN apt-get update \
     && mkdir -p /opt/spark-cli /opt/spark-venv /data/spark \
     && chown -R spark:spark /opt/spark-cli /opt/spark-venv /data/spark
 
-USER spark
 WORKDIR /opt/spark-cli
 
 COPY --chown=spark:spark pyproject.toml README.md LICENSE registry.json ./
@@ -26,6 +26,7 @@ COPY --chown=spark:spark docker/live/entrypoint.sh /usr/local/bin/spark-live-ent
 RUN python3 -m venv /opt/spark-venv \
     && /opt/spark-venv/bin/python -m pip install --upgrade pip \
     && /opt/spark-venv/bin/python -m pip install -e . \
+    && chown -R spark:spark /opt/spark-cli /opt/spark-venv /data/spark /home/spark \
     && chmod +x /usr/local/bin/spark-live-entrypoint
 
 ENV HOME=/home/spark \
@@ -39,4 +40,5 @@ ENV HOME=/home/spark \
 
 EXPOSE 5173
 
+USER root
 ENTRYPOINT ["spark-live-entrypoint"]

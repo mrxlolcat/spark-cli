@@ -10,6 +10,7 @@ This is separate from the locked-down Docker workbench in `docs/OPTIONAL_DOCKER_
 
 The live container starts:
 
+- as `root` only long enough to prepare the mounted state volume, then drops to the non-root `spark` user;
 - `spark setup telegram-starter` in `/data/spark`;
 - `spark update --skip-dirty` so persistent volumes move to the image's current registry pins on redeploy;
 - `spark live start`;
@@ -127,6 +128,8 @@ Set secrets in Railway Variables, never in source control:
 RAILWAY_DOCKERFILE_PATH=docker/live/Dockerfile
 RAILWAY_RUN_UID=0
 SPARK_ALLOWED_HOSTS=<your-railway-domain>.up.railway.app
+SPARK_UI_API_KEY=<random-ui-password>
+SPARK_BRIDGE_API_KEY=<random-api-password>
 TELEGRAM_BOT_TOKEN
 TELEGRAM_ADMIN_IDS
 SPARK_LLM_PROVIDER
@@ -134,26 +137,32 @@ ZAI_API_KEY / OPENAI_API_KEY / etc.
 SPARK_SPAWNER_PORT=${PORT}
 ```
 
-`RAILWAY_RUN_UID=0` is required when using Railway volumes with this image because
-Railway mounts volumes as `root`; without it, Spark cannot create `/data/spark/state`.
+`RAILWAY_RUN_UID=0` lets the entrypoint repair Railway volume ownership. Spark then
+drops to the non-root `spark` user before setup and runtime work starts.
 `SPARK_ALLOWED_HOSTS` lets Spawner's Vite server accept the generated Railway
 domain without disabling host-header protection for every possible host.
+`SPARK_UI_API_KEY` protects the hosted Spawner UI. Open the Railway URL as
+`https://your-domain.up.railway.app/?uiKey=<SPARK_UI_API_KEY>` to set an httpOnly
+browser cookie. `SPARK_BRIDGE_API_KEY` protects mission-start/control APIs.
 
 After deploy:
 
 1. Open the Railway logs and confirm `Spark Live is running`.
-2. Send `/diagnose` to the sandbox Telegram bot.
-3. Open the Railway URL for Spawner UI.
-4. Send `/remember Railway sandbox works`, then `/recall Railway sandbox`.
-5. Send `/run say exactly OK`.
+2. Run `spark verify --hosted` inside the container or over `railway ssh`.
+3. Send `/diagnose` to the sandbox Telegram bot.
+4. Open the Railway URL for Spawner UI with `?uiKey=<SPARK_UI_API_KEY>`.
+5. Send `/remember Railway sandbox works`, then `/recall Railway sandbox`.
+6. Send `/run say exactly OK`.
 
 ## Security Rules
 
 - Use a fresh Telegram bot for every hosted sandbox.
 - Keep sandbox API keys scoped and revocable.
+- Require `SPARK_UI_API_KEY` and `SPARK_BRIDGE_API_KEY` before exposing Spawner on a public host.
 - Do not mount or copy a real local `~/.spark` into hosted containers.
+- Never mount `/var/run/docker.sock`, `/`, `/root`, cloud credential directories, SSH keys, or browser profiles.
+- Prefer Docker hardening flags on VPS: `--cap-drop=ALL`, `--security-opt no-new-privileges`, resource limits, and only one writable Spark state volume.
 - Use a persistent volume only when you intentionally want memory/state to survive redeploys.
-- Treat public Spawner URLs as sensitive until access control is stronger.
 - Rotate tokens after demos if screenshots/logs might have exposed them.
 
 ## What This Proves

@@ -17,6 +17,14 @@ require_env() {
   fi
 }
 
+if [ "$(id -u)" = "0" ] && [ "${SPARK_LIVE_PRIVILEGE_DROPPED:-0}" != "1" ]; then
+  log "Preparing writable Spark state and dropping to the spark user..."
+  mkdir -p "${SPARK_HOME:-/data/spark}" /home/spark
+  chown -R spark:spark "${SPARK_HOME:-/data/spark}" /home/spark
+  export SPARK_LIVE_PRIVILEGE_DROPPED=1
+  exec gosu spark "$0" "$@"
+fi
+
 provider="${SPARK_LLM_PROVIDER:-}"
 if [ -z "$provider" ]; then
   die "SPARK_LLM_PROVIDER is required. Good VPS/Railway choices: zai, openai, openrouter, kimi, huggingface, minimax, anthropic with API key."
@@ -27,6 +35,16 @@ require_env TELEGRAM_ADMIN_IDS
 
 export SPARK_SPAWNER_PORT="${SPARK_SPAWNER_PORT:-${PORT:-5173}}"
 export SPARK_SPAWNER_HOST="${SPARK_SPAWNER_HOST:-0.0.0.0}"
+
+if [ -n "${SPARK_ALLOWED_HOSTS:-}" ]; then
+  require_env SPARK_BRIDGE_API_KEY
+  require_env SPARK_UI_API_KEY
+fi
+
+if [ -n "${SPARK_BRIDGE_API_KEY:-}" ]; then
+  export MCP_API_KEY="${MCP_API_KEY:-$SPARK_BRIDGE_API_KEY}"
+  export EVENTS_API_KEY="${EVENTS_API_KEY:-$SPARK_BRIDGE_API_KEY}"
+fi
 
 setup_args=(
   setup

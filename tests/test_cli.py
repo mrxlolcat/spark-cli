@@ -33,6 +33,7 @@ from spark_cli.cli import (
     collect_module_provenance_payload,
     collect_registry_pin_drift_payload,
     collect_setup_configuration,
+    collect_hosted_security_payload,
     collect_llm_doctor_context,
     collect_telegram_fix_payload,
     collect_verify_payload,
@@ -168,6 +169,7 @@ from spark_cli.cli import (
     format_start_warning,
     post_ready_watch_seconds,
     prompt_for_secret,
+    ready_check_headers,
     ready_timeout_seconds,
     read_generated_env,
     resolve_llm_provider,
@@ -791,8 +793,11 @@ class SparkCliTests(unittest.TestCase):
             os.environ,
             {
                 "PATH": safe_path,
+                "EVENTS_API_KEY": "events-key",
+                "MCP_API_KEY": "mcp-key",
                 "SPARK_ALLOWED_HOSTS": "spark-live-production.up.railway.app",
                 "SPARK_BRIDGE_API_KEY": "bridge-key",
+                "SPARK_UI_API_KEY": "ui-key",
                 "OPENAI_API_KEY": "parent-openai",
                 "ZAI_BASE_URL": "https://evil.example",
                 "UNRELATED_SECRET": "parent-secret",
@@ -801,8 +806,11 @@ class SparkCliTests(unittest.TestCase):
         ), patch("spark_cli.cli.read_generated_env", return_value={}):
             env = module_runtime_env(module)
         self.assertEqual(env["PATH"].split(os.pathsep)[-1], safe_path)
+        self.assertEqual(env["EVENTS_API_KEY"], "events-key")
+        self.assertEqual(env["MCP_API_KEY"], "mcp-key")
         self.assertEqual(env["SPARK_ALLOWED_HOSTS"], "spark-live-production.up.railway.app")
         self.assertEqual(env["SPARK_BRIDGE_API_KEY"], "bridge-key")
+        self.assertEqual(env["SPARK_UI_API_KEY"], "ui-key")
         self.assertNotIn("OPENAI_API_KEY", env)
         self.assertNotIn("ZAI_BASE_URL", env)
         self.assertNotIn("UNRELATED_SECRET", env)
@@ -5975,6 +5983,72 @@ class SparkCliTests(unittest.TestCase):
             self.assertEqual(args.func(args), 0)
         collect_mock.assert_called_once_with(hosted=False)
         self.assertIn("local_install.sh", stdout.getvalue())
+
+    def test_verify_hosted_reports_security_payload(self) -> None:
+        args = build_parser().parse_args(["verify", "--hosted", "--json"])
+        payload = {
+            "ok": True,
+            "summary": "Spark hosted security verification",
+            "checks": [{"name": "non_root_runtime", "ok": True, "detail": "ready"}],
+        }
+        with patch("spark_cli.cli.collect_hosted_security_payload", return_value=payload) as collect_mock, \
+             patch("sys.stdout", new_callable=StringIO) as stdout:
+            self.assertEqual(args.func(args), 0)
+        collect_mock.assert_called_once_with()
+        self.assertIn("non_root_runtime", stdout.getvalue())
+
+    def test_collect_hosted_security_payload_requires_keys_for_public_bind(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "SPARK_HOME": "/data/spark",
+                "SPARK_LLM_PROVIDER": "zai",
+                "SPARK_SPAWNER_HOST": "0.0.0.0",
+                "SPARK_ALLOWED_HOSTS": "spark-live.example.test",
+                "SPARK_BRIDGE_API_KEY": "bridge",
+                "SPARK_UI_API_KEY": "ui",
+            },
+            clear=True,
+        ), patch("spark_cli.cli.current_uid", return_value=1000), \
+            patch("spark_cli.cli.docker_socket_present", return_value=False), \
+            patch("spark_cli.cli.collect_secret_surface_payload", return_value={"ok": True, "detail": "clean", "findings": []}):
+            payload = collect_hosted_security_payload()
+        self.assertTrue(payload["ok"])
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertTrue(checks["non_root_runtime"]["ok"])
+        self.assertTrue(checks["no_docker_socket"]["ok"])
+        self.assertTrue(checks["allowed_hosts"]["ok"])
+        self.assertTrue(checks["hosted_api_keys"]["ok"])
+
+    def test_collect_hosted_security_payload_flags_openclaw_style_risks(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "SPARK_HOME": "/root",
+                "SPARK_LLM_PROVIDER": "codex",
+                "SPARK_SPAWNER_HOST": "0.0.0.0",
+            },
+            clear=True,
+        ), patch("spark_cli.cli.current_uid", return_value=0), \
+            patch("spark_cli.cli.docker_socket_present", return_value=True), \
+            patch("spark_cli.cli.collect_secret_surface_payload", return_value={"ok": True, "detail": "clean", "findings": []}):
+            payload = collect_hosted_security_payload()
+        self.assertFalse(payload["ok"])
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertFalse(checks["non_root_runtime"]["ok"])
+        self.assertFalse(checks["no_docker_socket"]["ok"])
+        self.assertFalse(checks["spark_home_boundary"]["ok"])
+        self.assertFalse(checks["allowed_hosts"]["ok"])
+        self.assertFalse(checks["hosted_api_keys"]["ok"])
+        self.assertFalse(checks["headless_provider"]["ok"])
+
+    def test_ready_check_headers_use_hosted_ui_key_for_loopback_only(self) -> None:
+        with patch.dict(os.environ, {"SPARK_UI_API_KEY": "ui-key", "SPARK_BRIDGE_API_KEY": "bridge-key"}, clear=True):
+            self.assertEqual(
+                ready_check_headers("http://127.0.0.1:5173/api/providers"),
+                {"x-spawner-ui-key": "ui-key", "x-api-key": "ui-key"},
+            )
+            self.assertEqual(ready_check_headers("https://spark-live.example.test/api/providers"), {})
 
     def test_collect_verify_payload_deep_runs_builder_memory_direct_smoke(self) -> None:
         expected = [

@@ -75,6 +75,7 @@ TELEGRAM_BOT_TOKEN_TIMEOUT_SECONDS = 10
 SAFE_PARENT_ENV_KEYS = {
     "APPDATA",
     "COMSPEC",
+    "EVENTS_API_KEY",
     "HOME",
     "HOMEDRIVE",
     "HOMEPATH",
@@ -82,6 +83,7 @@ SAFE_PARENT_ENV_KEYS = {
     "LC_ALL",
     "LC_CTYPE",
     "LOCALAPPDATA",
+    "MCP_API_KEY",
     "PATH",
     "PATHEXT",
     "PORT",
@@ -90,6 +92,7 @@ SAFE_PARENT_ENV_KEYS = {
     "SPARK_BRIDGE_API_KEY",
     "SPARK_SPAWNER_HOST",
     "SPARK_SPAWNER_PORT",
+    "SPARK_UI_API_KEY",
     "SYSTEMDRIVE",
     "SYSTEMROOT",
     "TEMP",
@@ -6326,6 +6329,139 @@ def collect_verify_payload(*, deep: bool = False) -> dict[str, Any]:
     }
 
 
+def current_uid() -> int | None:
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return None
+    try:
+        return int(getuid())
+    except OSError:
+        return None
+
+
+def docker_socket_present() -> bool:
+    return Path("/var/run/docker.sock").exists()
+
+
+def hosted_unsafe_home_paths() -> set[str]:
+    unsafe = {"/", "/root"}
+    try:
+        unsafe.add(str(Path.home().resolve()))
+    except RuntimeError:
+        pass
+    return unsafe
+
+
+def hosted_spark_home_is_safe(value: str) -> bool:
+    expanded = Path(value).expanduser()
+    candidates = {value.strip(), str(expanded)}
+    try:
+        candidates.add(str(expanded.resolve()))
+    except OSError:
+        pass
+    return not any(candidate in hosted_unsafe_home_paths() for candidate in candidates)
+
+
+def collect_hosted_security_payload() -> dict[str, Any]:
+    provider = (os.environ.get("SPARK_LLM_PROVIDER") or "").strip().lower()
+    allowed_hosts = [host.strip() for host in (os.environ.get("SPARK_ALLOWED_HOSTS") or "").split(",") if host.strip()]
+    spawner_host = (os.environ.get("SPARK_SPAWNER_HOST") or "").strip()
+    public_bind = spawner_host in {"0.0.0.0", "::"} or bool(allowed_hosts)
+    uid = current_uid()
+    spark_home_value = os.environ.get("SPARK_HOME", str(SPARK_HOME))
+    spark_home = Path(spark_home_value).expanduser().resolve()
+
+    checks = [
+        {
+            "name": "non_root_runtime",
+            "ok": uid is None or uid != 0,
+            "required": True,
+            "detail": (
+                f"Spark runtime is not root (uid={uid})."
+                if uid is not None and uid != 0
+                else "Spark runtime appears to be running as root; hosted containers should drop to the spark user after volume prep."
+            ),
+            "repair": "Use the Spark Live Docker entrypoint or run as a non-root user after chowning the state volume.",
+        },
+        {
+            "name": "no_docker_socket",
+            "ok": not docker_socket_present(),
+            "required": True,
+            "detail": (
+                "Docker socket is not mounted."
+                if not docker_socket_present()
+                else "Docker socket is visible inside the container; this is effectively host-root access."
+            ),
+            "repair": "Remove any /var/run/docker.sock mount before running hosted Spark.",
+        },
+        {
+            "name": "spark_home_boundary",
+            "ok": hosted_spark_home_is_safe(spark_home_value),
+            "required": True,
+            "detail": f"Spark home is isolated at {spark_home}.",
+            "repair": "Set SPARK_HOME to an isolated volume such as /data/spark.",
+        },
+        {
+            "name": "allowed_hosts",
+            "ok": (not public_bind) or bool(allowed_hosts),
+            "required": True,
+            "detail": (
+                f"Spawner public host allowlist: {', '.join(allowed_hosts)}."
+                if allowed_hosts
+                else "Spawner is publicly bound but SPARK_ALLOWED_HOSTS is not configured."
+            ),
+            "repair": "Set SPARK_ALLOWED_HOSTS to the exact hosted domain.",
+        },
+        {
+            "name": "hosted_api_keys",
+            "ok": (not public_bind)
+            or (bool(os.environ.get("SPARK_BRIDGE_API_KEY")) and bool(os.environ.get("SPARK_UI_API_KEY"))),
+            "required": True,
+            "detail": (
+                "Hosted UI and bridge API keys are configured; Spark Live maps the bridge key to control/event routes at startup."
+                if bool(os.environ.get("SPARK_BRIDGE_API_KEY")) and bool(os.environ.get("SPARK_UI_API_KEY"))
+                else "Hosted/public Spawner needs SPARK_UI_API_KEY plus SPARK_BRIDGE_API_KEY."
+            ),
+            "repair": "Set SPARK_UI_API_KEY and SPARK_BRIDGE_API_KEY as platform secrets.",
+        },
+        {
+            "name": "headless_provider",
+            "ok": provider not in {"codex"},
+            "required": True,
+            "detail": (
+                f"Hosted provider is API-compatible/headless: {provider or 'not set'}."
+                if provider and provider not in {"codex"}
+                else "Codex OAuth is interactive and should not be used in hosted Docker/Railway."
+            ),
+            "repair": "Use openai, zai, openrouter, kimi, huggingface, minimax, or anthropic API-key mode for hosted Spark.",
+        },
+    ]
+
+    secret_surface = collect_secret_surface_payload()
+    checks.append(
+        {
+            "name": "secret_surface",
+            "ok": bool(secret_surface.get("ok")),
+            "required": True,
+            "detail": str(secret_surface.get("detail") or ""),
+            "repair": str(secret_surface.get("repair") or "spark fix secrets"),
+            "findings": secret_surface.get("findings", []),
+        }
+    )
+
+    return {
+        "ok": all(bool(check["ok"]) for check in checks if check.get("required", True)),
+        "summary": "Spark hosted security verification",
+        "checks": checks,
+        "next_commands": [
+            "spark live status",
+            "spark verify --onboarding",
+            "spark providers test --role chat",
+            "spark logs spawner-ui --lines 80",
+        ],
+    }
+
+
 def onboarding_checklist() -> list[str]:
     return [
         "Open Telegram and send /start to your Spark bot.",
@@ -6379,6 +6515,19 @@ def cmd_verify(args: argparse.Namespace) -> int:
             if not check["ok"] and check.get("expected_sha256"):
                 print(f"      expected: {check['expected_sha256']}")
                 print(f"      actual:   {check['actual_sha256']}")
+        return 0 if payload["ok"] else 1
+
+    if getattr(args, "hosted", False):
+        payload = collect_hosted_security_payload()
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            return 0 if payload["ok"] else 1
+        print(payload["summary"])
+        for check in payload["checks"]:
+            marker = "[OK]" if check["ok"] else "[FIX]"
+            print(f"{marker} {check['name']}: {check['detail']}")
+            if not check["ok"] and check.get("repair"):
+                print(f"      {check['repair']}")
         return 0 if payload["ok"] else 1
 
     onboarding = bool(getattr(args, "onboarding", False))
@@ -6693,7 +6842,8 @@ def wait_for_ready_check(
                 return False, f"process exited with code {exit_code}"
         if ready_check.startswith(("http://", "https://")):
             try:
-                with urllib.request.urlopen(ready_check, timeout=2) as response:
+                request = urllib.request.Request(ready_check, headers=ready_check_headers(ready_check))
+                with urllib.request.urlopen(request, timeout=2) as response:
                     if 200 <= int(response.status) < 400:
                         return True, ready_check
                     last_error = f"ready check returned HTTP {response.status}"
@@ -6721,6 +6871,18 @@ def wait_for_ready_check(
     if ready_check.startswith(("http://", "https://")):
         return False, f"{ready_check} did not become ready within {timeout_seconds}s (last error: {last_error})"
     return False, f"ready check did not pass within {timeout_seconds}s: {last_error}"
+
+
+def ready_check_headers(ready_check: str) -> dict[str, str]:
+    if not ready_check.startswith(("http://", "https://")):
+        return {}
+    parsed = urllib.parse.urlparse(ready_check)
+    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return {}
+    key = os.environ.get("SPARK_UI_API_KEY") or os.environ.get("SPARK_BRIDGE_API_KEY")
+    if not key:
+        return {}
+    return {"x-spawner-ui-key": key, "x-api-key": key}
 
 
 def direct_node_package_script_argv(command: str, cwd: Path) -> list[str] | None:
@@ -8492,6 +8654,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--onboarding", action="store_true", help="Run first-user onboarding checks and print the Telegram finish checklist")
     verify_parser.add_argument("--installers", action="store_true", help="Verify installer script hashes against the committed manifest")
     verify_parser.add_argument("--hosted-installers", action="store_true", help="Also compare agent.sparkswarm.ai installers against the committed manifest")
+    verify_parser.add_argument("--hosted", action="store_true", help="Verify hosted Docker/Railway security posture")
     verify_parser.add_argument("--provenance", action="store_true", help="Report blessed module commit-pin, signature, and attestation posture")
     verify_parser.add_argument("--registry-pins", action="store_true", help="Verify blessed registry pins match each module's remote HEAD")
     verify_parser.set_defaults(func=cmd_verify)
