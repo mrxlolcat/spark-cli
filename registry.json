@@ -9,7 +9,7 @@
     },
     "spark-character": {
       "source": "https://github.com/vibeforge1111/spark-character",
-      "commit": "5afe35c928d93740583d923669487d8eb2446c3b",
+      "commit": "b58d5a152fc5c8c9b4cc68b27f24a86b357f1c55",
       "require_signed_commit": false,
       "blessed": true,
       "summary": "Persona, voice consistency, scoring, and opt-in character evolution runtime for Spark"
@@ -23,14 +23,14 @@
     },
     "spark-intelligence-builder": {
       "source": "https://github.com/vibeforge1111/spark-intelligence-builder",
-      "commit": "6df42ff8b181f60cb57642d198a94434a57bef0c",
+      "commit": "9df29b56bfcdf2597aa588d93612389ad29d68da",
       "require_signed_commit": false,
       "blessed": true,
       "summary": "Spark runtime core for identity, memory, and routing"
     },
     "domain-chip-memory": {
       "source": "https://github.com/vibeforge1111/domain-chip-memory",
-      "commit": "b9bd8a89fce8d15336eee6dd8afc2eac943b27f7",
+      "commit": "edf8818c3fa4da0ba40d65ae1b3e45c90e3a9dba",
       "require_signed_commit": false,
       "blessed": true,
       "summary": "Default memory substrate, benchmark pack, and Telegram memory-check chip"
