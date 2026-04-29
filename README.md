@@ -245,7 +245,7 @@ spark verify --registry-pins
 spark verify --provenance
 ```
 
-`--registry-pins` checks every blessed module pin against its remote HEAD. `--provenance` checks commit-pin, signature, and attestation posture in report-only mode.
+`--registry-pins` checks every blessed module pin against its remote HEAD. `--provenance` requires commit pins and attestation metadata for blessed modules; signed commit enforcement is still report-only until the release signing path is fully active.
 
 To inspect only LLM choices and role readiness:
 

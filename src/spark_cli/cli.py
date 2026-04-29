@@ -576,10 +576,10 @@ class ReportOnlyModuleProvenanceVerifier:
         if not signature_enforced:
             warnings.append("commit signature enforcement is report-only")
         warnings.extend(self.attestation_warnings(metadata, source=source, commit=commit))
-        if any("attestation" in warning and warning != "module attestation is not declared yet" for warning in warnings):
+        if any("attestation" in warning for warning in warnings):
             ok = False
         detail = (
-            "Commit pin is present; signature and attestation checks are report-only."
+            "Commit pin and attestation metadata are present; signature verification is report-only."
             if ok
             else "Module provenance metadata is incomplete."
         )
@@ -1228,11 +1228,11 @@ def collect_module_provenance_payload(
     return {
         "ok": all(check["ok"] for check in checks),
         "summary": "Spark module provenance report",
-        "mode": "report_only",
+        "mode": "metadata_required",
         "enforcement": {
             "commit_pins": "required",
             "signed_commits": "report_only",
-            "attestations": "report_only",
+            "attestations": "required",
         },
         "checks": checks,
     }

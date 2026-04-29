@@ -2551,7 +2551,7 @@ class SparkCliTests(unittest.TestCase):
             }
         )
 
-    def test_module_provenance_report_is_non_enforcing_for_future_attestations(self) -> None:
+    def test_module_provenance_report_requires_attestations_for_blessed_modules(self) -> None:
         registry = {
             "modules": {
                 "spark-telegram-bot": {
@@ -2566,9 +2566,9 @@ class SparkCliTests(unittest.TestCase):
 
         payload = collect_module_provenance_payload(registry=registry)
 
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["mode"], "report_only")
-        self.assertEqual(payload["enforcement"]["attestations"], "report_only")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["mode"], "metadata_required")
+        self.assertEqual(payload["enforcement"]["attestations"], "required")
         self.assertEqual(payload["checks"][0]["name"], "spark-telegram-bot")
         self.assertIn("module attestation is not declared yet", payload["checks"][0]["warnings"])
 
