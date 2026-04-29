@@ -32,6 +32,7 @@ import tomllib
 
 from .runtime_policy import run_runtime_command, runtime_command_argv, split_single_argv_command
 from .security.approval import CommandContext, approval_required_for_command
+from .security.prompt_injection import scan_prompt_injection_text
 from .security.url_policy import UrlPolicy, validate_url_safety
 
 CLI_MAX_SUPPORTED_SCHEMA = 1
@@ -194,9 +195,12 @@ CHIP_SCAN_TEXT_SUFFIXES = {
     ".ini",
     ".js",
     ".json",
+    ".md",
+    ".mdx",
     ".mjs",
     ".ps1",
     ".py",
+    ".rst",
     ".sh",
     ".toml",
     ".ts",
@@ -3443,6 +3447,8 @@ def chip_scan_text(path_label: str, text: str) -> list[ChipScanFinding]:
     for category, severity, pattern, detail in CHIP_SCAN_PATTERNS:
         if pattern.search(text):
             findings.append(ChipScanFinding(category, severity, path_label, detail))
+    for finding in scan_prompt_injection_text(path_label, text):
+        findings.append(ChipScanFinding(finding.category, finding.severity, finding.path, finding.detail))
     return findings
 
 
