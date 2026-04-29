@@ -37,7 +37,7 @@
     },
     "spawner-ui": {
       "source": "https://github.com/vibeforge1111/vibeship-spawner-ui",
-      "commit": "7d0347e348bfb10939e071515cd49d4af67c2178",
+      "commit": "45e24581db1d51c51120a5d60b9bea0ba4fd0cb6",
       "require_signed_commit": false,
       "blessed": true,
       "summary": "Execution plane and local dashboard for the Spark starter stack"
