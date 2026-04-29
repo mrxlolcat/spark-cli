@@ -233,6 +233,7 @@ from spark_cli.cli import (
     hosted_local_provider_endpoint_errors,
     linux_effective_capabilities_dropped,
     linux_no_new_privileges_enabled,
+    main,
     linux_root_filesystem_read_only,
     mountinfo_mountpoints,
 )
@@ -299,6 +300,13 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(decision.action_class, "credential_mutation")
         self.assertEqual(decision.confirmation_phrase, "approve secret change")
 
+    def test_approval_classifier_flags_purge_home_uninstall(self) -> None:
+        decision = approval_required_for_command(["spark", "uninstall", "--all", "--purge-home"], CommandContext())
+        self.assertTrue(decision.requires_approval)
+        self.assertEqual(decision.action_class, "destructive_filesystem")
+        self.assertEqual(decision.risk, "critical")
+        self.assertEqual(decision.confirmation_phrase, "delete spark home")
+
     def test_approval_classifier_flags_hosted_deploy(self) -> None:
         decision = approval_required_for_command(["railway", "up", "--detach"], CommandContext(hosted=True))
         self.assertTrue(decision.requires_approval)
@@ -341,6 +349,34 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "report_only")
         self.assertEqual(payload["decision"]["action_class"], "destructive_filesystem")
         self.assertTrue(payload["decision"]["requires_approval"])
+
+    def test_main_blocks_sensitive_command_in_non_interactive_shell(self) -> None:
+        with patch("spark_cli.cli.ensure_state_dirs"), \
+             patch("spark_cli.cli.stdin_is_tty", return_value=False), \
+             patch("spark_cli.cli.cmd_secrets_delete", return_value=0) as delete_secret_command, \
+             patch("sys.stdout", new_callable=StringIO) as stdout:
+            self.assertEqual(main(["secrets", "delete", "telegram.bot_token"]), 2)
+        delete_secret_command.assert_not_called()
+        self.assertIn("Spark blocked a sensitive action", stdout.getvalue())
+
+    def test_main_requires_exact_phrase_for_sensitive_command(self) -> None:
+        with patch("spark_cli.cli.ensure_state_dirs"), \
+             patch("spark_cli.cli.stdin_is_tty", return_value=True), \
+             patch("builtins.input", return_value="approve something else"), \
+             patch("spark_cli.cli.cmd_secrets_delete", return_value=0) as delete_secret_command, \
+             patch("sys.stdout", new_callable=StringIO) as stdout:
+            self.assertEqual(main(["secrets", "delete", "telegram.bot_token"]), 2)
+        delete_secret_command.assert_not_called()
+        self.assertIn("Approval not granted", stdout.getvalue())
+
+    def test_main_runs_sensitive_command_after_exact_phrase(self) -> None:
+        with patch("spark_cli.cli.ensure_state_dirs"), \
+             patch("spark_cli.cli.stdin_is_tty", return_value=True), \
+             patch("builtins.input", return_value="approve secret access"), \
+             patch("spark_cli.cli.cmd_secrets_delete", return_value=0) as delete_secret_command, \
+             patch("sys.stdout", new_callable=StringIO):
+            self.assertEqual(main(["secrets", "delete", "telegram.bot_token"]), 0)
+        delete_secret_command.assert_called_once()
 
     def test_validate_init_module_name_rejects_bad_names(self) -> None:
         validate_init_module_name("my-module")

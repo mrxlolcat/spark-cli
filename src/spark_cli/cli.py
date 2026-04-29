@@ -5578,6 +5578,70 @@ def cmd_approval(args: argparse.Namespace) -> int:
     return 0
 
 
+APPROVAL_ENFORCED_ACTION_CLASSES = {
+    "credential_mutation",
+    "destructive_filesystem",
+    "network_exfiltration",
+    "process_autostart_mutation",
+}
+
+
+def approval_enforcement_enabled() -> bool:
+    return str(os.environ.get("SPARK_APPROVAL_ENFORCE", "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def command_argv_for_approval(argv: list[str] | None) -> list[str]:
+    return ["spark", *(list(argv) if argv is not None else sys.argv[1:])]
+
+
+def approval_context_for_args(args: argparse.Namespace) -> CommandContext:
+    return CommandContext(
+        surface="cli",
+        hosted=running_as_hosted_context(),
+        non_interactive=bool(getattr(args, "non_interactive", False)) or not stdin_is_tty(),
+    )
+
+
+def should_enforce_approval(args: argparse.Namespace, decision: Any) -> bool:
+    if not decision.requires_approval:
+        return False
+    if getattr(args, "command", "") == "approval":
+        return False
+    if decision.action_class not in APPROVAL_ENFORCED_ACTION_CLASSES:
+        return False
+    if getattr(args, "command", "") == "setup" and decision.action_class == "identity_access_mutation":
+        return False
+    return True
+
+
+def enforce_cli_approval(args: argparse.Namespace, command_argv: list[str]) -> int | None:
+    if not approval_enforcement_enabled():
+        return None
+    context = approval_context_for_args(args)
+    decision = approval_required_for_command(command_argv, context)
+    if not should_enforce_approval(args, decision):
+        return None
+    if decision.approval_mode == "blocked":
+        print("Spark blocked a sensitive action because this shell is non-interactive.")
+        print(f"Class: {decision.action_class}")
+        print(f"Risk: {decision.risk}")
+        print(f"Reason: {decision.reason}")
+        print("Run the command again in an interactive terminal so Spark can ask for confirmation.")
+        return 2
+    print("Spark needs confirmation before continuing.")
+    print(f"Class: {decision.action_class}")
+    print(f"Risk: {decision.risk}")
+    print(f"Reason: {decision.reason}")
+    if decision.target_display:
+        print(f"Target: {decision.target_display}")
+    print(f"Type exactly: {decision.confirmation_phrase}")
+    response = input("Approval phrase: ").strip().lower()
+    if response != decision.confirmation_phrase:
+        print("Approval not granted. Nothing changed.")
+        return 2
+    return None
+
+
 def redact_sensitive_text(value: str) -> str:
     redacted = str(value)
     for pattern in SENSITIVE_VALUE_PATTERNS:
@@ -10110,6 +10174,9 @@ def main(argv: list[str] | None = None) -> int:
     ensure_state_dirs()
     parser = build_parser()
     args = parser.parse_args(argv)
+    approval_exit = enforce_cli_approval(args, command_argv_for_approval(argv))
+    if approval_exit is not None:
+        return approval_exit
     return int(args.func(args))
 
 

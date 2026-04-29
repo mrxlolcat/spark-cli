@@ -148,6 +148,17 @@ def approval_required_for_command(argv: list[str], context: CommandContext | Non
     if first == "spark" and lowered[1:3] == ["providers", "status"]:
         return _decision(parts, ctx, "none", "none", "`spark providers status` is read-only.")
 
+    if first == "spark" and second == "uninstall" and "--purge-home" in lowered:
+        return _decision(
+            parts,
+            ctx,
+            "destructive_filesystem",
+            "critical",
+            "Command can delete the local Spark home, including state, logs, generated config, and installed module checkouts.",
+            target_display="SPARK_HOME",
+            confirmation_phrase="delete spark home",
+        )
+
     destructive_bins = {"rm", "rmdir", "del", "remove-item", "erase"}
     if first in destructive_bins or _contains_any(lowered, destructive_bins):
         recursive_or_force = _contains_any(lowered, {"-rf", "-fr", "-r", "--recursive", "-recurse", "-force", "/s"})
