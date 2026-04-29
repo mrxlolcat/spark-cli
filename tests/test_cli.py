@@ -512,6 +512,10 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(payload["nested"]["telegram_bot_token"], "[REDACTED]")
         self.assertEqual(payload["safe"], "Spawner UI unhealthy")
 
+    def test_share_redaction_does_not_flag_skip_words_as_api_keys(self) -> None:
+        text = "setup_should_run_install_commands and skip_install_commands are normal field names"
+        self.assertEqual(redact_sensitive_text(text), text)
+
     def test_collect_llm_doctor_context_defaults_to_no_logs(self) -> None:
         with patch("spark_cli.cli.collect_status_payload", return_value={"ok": False, "modules": []}), \
              patch("spark_cli.cli.provider_status_payload", return_value={"ok": True}), \
@@ -552,11 +556,16 @@ class SparkCliTests(unittest.TestCase):
     def test_shareable_doctor_text_removes_tokens_and_home_paths(self) -> None:
         with patch("spark_cli.cli.Path.home", return_value=Path("C:/Users/Alice")):
             redacted = redact_shareable_text(
-                "C:/Users/Alice/.spark/modules bot_token=1234567890:AAabcdefghijklmnopqrstuvwxyz1234567890"
+                "C:/Users/Alice/.spark/modules bot_token=1234567890:AAabcdefghijklmnopqrstuvwxyz1234567890 "
+                "Admin ID: 8319079055 192.168.1.50"
             )
         self.assertNotIn("Alice", redacted)
         self.assertNotIn("1234567890:AA", redacted)
+        self.assertNotIn("8319079055", redacted)
+        self.assertNotIn("192.168.1.50", redacted)
         self.assertIn("~/.spark", redacted)
+        self.assertIn("[TELEGRAM_ID_REDACTED]", redacted)
+        self.assertIn("[PRIVATE_IP_REDACTED]", redacted)
 
     def test_secret_surface_payload_flags_generated_plaintext_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -624,6 +633,9 @@ class SparkCliTests(unittest.TestCase):
             "Fix used Authorization: Bearer sk-proj-secretvalue1234567890 in C:/Users/Alice/.spark/logs",
         )
         self.assertIn("not automatically uploaded", draft)
+        self.assertIn("Share Safety Manifest", draft)
+        self.assertIn("Uploaded: no", draft)
+        self.assertIn("Remaining risk scan", draft)
         self.assertIn("Safety Checklist", draft)
         self.assertNotIn("sk-proj-secretvalue", draft)
         self.assertNotIn("C:/Users/Alice", draft)
@@ -650,6 +662,9 @@ class SparkCliTests(unittest.TestCase):
                 payload = collect_support_bundle_payload(include_logs=True, log_lines=5)
         encoded = json.dumps(payload)
         self.assertIn("local_review_first", encoded)
+        self.assertIn("sharing_manifest", payload)
+        self.assertTrue(payload["sharing_manifest"]["review_required"])
+        self.assertFalse(payload["sharing_manifest"]["uploaded"])
         self.assertNotIn("1234567890:AA", encoded)
         self.assertNotIn("Alice", encoded)
 

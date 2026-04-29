@@ -4744,7 +4744,13 @@ def collect_support_bundle_payload(*, include_logs: bool = False, log_lines: int
                 if lines:
                     logs[name] = [redact_shareable_text(line.rstrip()) for line in lines]
         payload["logs"] = logs
-    return redact_shareable_payload(redact_for_llm(payload))
+    redacted_payload = redact_shareable_payload(redact_for_llm(payload))
+    redacted_payload["sharing_manifest"] = build_share_safety_manifest(
+        redacted_payload,
+        include_logs=include_logs,
+        purpose="support_bundle",
+    )
+    return redacted_payload
 
 
 def write_support_bundle(payload: dict[str, Any]) -> Path:
@@ -4756,6 +4762,7 @@ def write_support_bundle(payload: dict[str, Any]) -> Path:
         "Spark Support Bundle\n\n"
         "This archive is local-first and not uploaded automatically.\n"
         "Review it before sharing. Secrets, token-looking values, and local home paths are redacted best-effort.\n"
+        "If sharing upstream, include only the smallest relevant excerpt and never include raw logs without review.\n"
     )
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("README.txt", readme)
@@ -4778,6 +4785,7 @@ def cmd_support(args: argparse.Namespace) -> int:
     print("Review before sharing:")
     print("  - No API keys, bot tokens, Authorization headers, cookies, or private logs.")
     print("  - Logs are excluded unless you used --include-logs.")
+    print("  - A sharing_manifest is included in support.json; fix any remaining_risk_findings before sharing.")
     print("  - Nothing was uploaded.")
     print("")
     print("Useful next:")
@@ -4787,7 +4795,7 @@ def cmd_support(args: argparse.Namespace) -> int:
 
 SENSITIVE_VALUE_PATTERNS = [
     re.compile(r"\b\d{7,12}:[A-Za-z0-9_-]{30,}\b"),
-    re.compile(r"\b(?:sk|sk-proj|sk-ant|gho|ghp|glpat|xoxb|xoxp|AIza)[A-Za-z0-9_\-]{16,}\b"),
+    re.compile(r"\b(?:sk-[A-Za-z0-9_\-]{16,}|sk-proj-[A-Za-z0-9_\-]{16,}|sk-ant-[A-Za-z0-9_\-]{16,}|gho_[A-Za-z0-9_]{16,}|ghp_[A-Za-z0-9_]{16,}|glpat-[A-Za-z0-9_\-]{16,}|xoxb-[A-Za-z0-9_\-]{16,}|xoxp-[A-Za-z0-9_\-]{16,}|AIza[A-Za-z0-9_\-]{16,})\b"),
     re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)(\s*[:=]\s*)([^\s,;\"']+)"),
     re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._\-]{16,})"),
 ]
@@ -4796,7 +4804,7 @@ SECRET_SURFACE_ENV_PATTERN = re.compile(
 )
 SECRET_SURFACE_TOKEN_PATTERNS = [
     re.compile(r"\b(?:bot)?\d{7,12}:[A-Za-z0-9_-]{30,}\b"),
-    re.compile(r"\b(?:sk|sk-proj|sk-ant|gho|ghp|glpat|xoxb|xoxp|AIza)[A-Za-z0-9_\-]{16,}\b"),
+    re.compile(r"\b(?:sk-[A-Za-z0-9_\-]{16,}|sk-proj-[A-Za-z0-9_\-]{16,}|sk-ant-[A-Za-z0-9_\-]{16,}|gho_[A-Za-z0-9_]{16,}|ghp_[A-Za-z0-9_]{16,}|glpat-[A-Za-z0-9_\-]{16,}|xoxb-[A-Za-z0-9_\-]{16,}|xoxp-[A-Za-z0-9_\-]{16,}|AIza[A-Za-z0-9_\-]{16,})\b"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{16,}"),
 ]
 SECRET_SURFACE_MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -5595,6 +5603,16 @@ def redact_shareable_text(value: str) -> str:
     redacted = re.sub(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/\s]+", "%USERPROFILE%", redacted)
     redacted = re.sub(r"(?i)\b/Users/[^/\s]+", "$HOME", redacted)
     redacted = re.sub(r"(?i)\b/home/[^/\s]+", "$HOME", redacted)
+    redacted = re.sub(
+        r"(?i)\b(Telegram(?:\s+admin)?\s+ID|Admin\s+ID|ALLOWED_TELEGRAM_IDS)(\s*[:=]\s*)(\d{5,16})\b",
+        lambda match: f"{match.group(1)}{match.group(2)}[TELEGRAM_ID_REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b",
+        "[PRIVATE_IP_REDACTED]",
+        redacted,
+    )
     return redacted
 
 
@@ -5606,6 +5624,49 @@ def redact_shareable_payload(value: Any) -> Any:
     if isinstance(value, str):
         return redact_shareable_text(value)
     return value
+
+
+SHARE_SAFETY_REMAINING_RISK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("token_like_value", re.compile(r"\b(?:bot)?\d{7,12}:[A-Za-z0-9_-]{30,}\b")),
+    ("api_key_like_value", re.compile(r"\b(?:sk-[A-Za-z0-9_\-]{16,}|sk-proj-[A-Za-z0-9_\-]{16,}|sk-ant-[A-Za-z0-9_\-]{16,}|gho_[A-Za-z0-9_]{16,}|ghp_[A-Za-z0-9_]{16,}|glpat-[A-Za-z0-9_\-]{16,}|xoxb-[A-Za-z0-9_\-]{16,}|xoxp-[A-Za-z0-9_\-]{16,}|AIza[A-Za-z0-9_\-]{16,})\b")),
+    ("authorization_header", re.compile(r"(?i)\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._\-]{16,}")),
+    ("private_key_block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("windows_user_path", re.compile(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/\s]+")),
+    ("unix_user_path", re.compile(r"(?i)\b(?:/Users|/home)/[^/\s]+")),
+    ("telegram_id_context", re.compile(r"(?i)\b(?:Telegram(?:\s+admin)?\s+ID|Admin\s+ID|ALLOWED_TELEGRAM_IDS)\s*[:=]\s*\d{5,16}\b")),
+]
+
+
+def collect_share_safety_findings(value: Any) -> list[dict[str, str]]:
+    text = json.dumps(value, sort_keys=True, default=str) if not isinstance(value, str) else value
+    findings: list[dict[str, str]] = []
+    for name, pattern in SHARE_SAFETY_REMAINING_RISK_PATTERNS:
+        if pattern.search(text):
+            findings.append({"kind": name, "action": "review_or_redact_before_sharing"})
+    return findings
+
+
+def build_share_safety_manifest(value: Any, *, include_logs: bool, purpose: str) -> dict[str, Any]:
+    return {
+        "purpose": purpose,
+        "uploaded": False,
+        "review_required": True,
+        "logs_included": bool(include_logs),
+        "raw_logs_allowed": False,
+        "redactions_applied": [
+            "api_keys_tokens_and_authorization_headers",
+            "telegram_bot_tokens",
+            "home_and_spark_paths",
+            "telegram_admin_id_context",
+            "private_network_addresses",
+        ],
+        "remaining_risk_findings": collect_share_safety_findings(value),
+        "safe_sharing_rules": [
+            "Share only after reading the generated file locally.",
+            "Do not include raw logs, chat transcripts, local project names, screenshots with secrets, or environment dumps.",
+            "For upstream fixes, summarize the general bug and attach a focused code/test diff instead of a machine-specific report.",
+        ],
+    }
 
 
 def redact_for_llm(value: Any) -> Any:
@@ -5965,9 +6026,26 @@ def write_doctor_report(content: str, *, prefix: str = "spark-doctor") -> Path:
 def render_upstream_pr_candidate(problem: str, doctor_report: str) -> str:
     safe_problem = redact_shareable_text(problem).strip() or "Spark doctor repair"
     safe_report = redact_shareable_text(doctor_report).strip()
+    manifest = build_share_safety_manifest(
+        {"problem": safe_problem, "doctor_report": safe_report},
+        include_logs=False,
+        purpose="upstream_pr_candidate",
+    )
+    remaining_findings = manifest.get("remaining_risk_findings") or []
+    remaining_text = (
+        "None detected by Spark's local redaction scan."
+        if not remaining_findings
+        else "\n".join(f"- {item.get('kind')}: {item.get('action')}" for item in remaining_findings if isinstance(item, dict))
+    )
     return (
         "# Spark Upstream PR Candidate\n\n"
         "This draft is sanitized for review, not automatically uploaded. Read it before sharing.\n\n"
+        "## Share Safety Manifest\n"
+        "- Uploaded: no\n"
+        "- Review required: yes\n"
+        "- Raw logs allowed: no\n"
+        "- Remaining risk scan:\n"
+        f"{remaining_text}\n\n"
         "## Safety Checklist\n"
         "- [ ] No API keys, bot tokens, secrets, cookies, private keys, or Authorization headers.\n"
         "- [ ] No personal chat transcripts, private project names, Telegram ids, or local usernames.\n"
