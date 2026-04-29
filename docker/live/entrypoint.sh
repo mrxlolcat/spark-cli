@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 log() {
   printf '[spark-live] %s\n' "$*"
@@ -14,6 +15,48 @@ require_env() {
   local name="$1"
   if [ -z "${!name:-}" ]; then
     die "$name is required. Set it as a platform secret/env var, not in the image."
+  fi
+}
+
+is_public_spawner_bind() {
+  local host="${SPARK_SPAWNER_HOST:-0.0.0.0}"
+  [ "$host" = "0.0.0.0" ] || [ "$host" = "::" ] || [ -n "${SPARK_ALLOWED_HOSTS:-}" ]
+}
+
+validate_allowed_hosts() {
+  local raw="${SPARK_ALLOWED_HOSTS:-}"
+  if [ -z "$raw" ]; then
+    die "SPARK_ALLOWED_HOSTS is required when Spawner binds publicly. Use exact hosted domains only."
+  fi
+  local IFS=','
+  local host
+  for host in $raw; do
+    host="$(printf '%s' "$host" | xargs)"
+    case "$host" in
+      ""|"*"|"0.0.0.0"|"::"|"localhost"|"127.0.0.1"|"::1")
+        die "SPARK_ALLOWED_HOSTS contains unsafe host '$host'. Use exact public hostnames only."
+        ;;
+      http://*|https://*|*/*|*:* )
+        die "SPARK_ALLOWED_HOSTS must contain hostnames only, with no scheme, path, wildcard, or port."
+        ;;
+    esac
+  done
+}
+
+require_strong_secret() {
+  local name="$1"
+  require_env "$name"
+  local value="${!name}"
+  if [ "${#value}" -lt 24 ]; then
+    die "$name must be at least 24 characters for hosted/public Spark."
+  fi
+  case "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" in
+    *changeme*|*change-me*|*placeholder*|*default*|*password*|*secret*|*token*|*spark*|*admin*|*test*)
+      die "$name looks like a placeholder. Use a fresh random secret."
+      ;;
+  esac
+  if printf '%s' "$value" | grep -q '[[:space:]]'; then
+    die "$name must not contain whitespace."
   fi
 }
 
@@ -36,9 +79,13 @@ require_env TELEGRAM_ADMIN_IDS
 export SPARK_SPAWNER_PORT="${SPARK_SPAWNER_PORT:-${PORT:-5173}}"
 export SPARK_SPAWNER_HOST="${SPARK_SPAWNER_HOST:-0.0.0.0}"
 
-if [ -n "${SPARK_ALLOWED_HOSTS:-}" ]; then
-  require_env SPARK_BRIDGE_API_KEY
-  require_env SPARK_UI_API_KEY
+if is_public_spawner_bind; then
+  validate_allowed_hosts
+  require_strong_secret SPARK_BRIDGE_API_KEY
+  require_strong_secret SPARK_UI_API_KEY
+  if [ "$SPARK_BRIDGE_API_KEY" = "$SPARK_UI_API_KEY" ]; then
+    die "SPARK_BRIDGE_API_KEY and SPARK_UI_API_KEY must be different."
+  fi
 fi
 
 if [ -n "${SPARK_BRIDGE_API_KEY:-}" ]; then
