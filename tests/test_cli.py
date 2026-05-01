@@ -2965,7 +2965,7 @@ class SparkCliTests(unittest.TestCase):
             self.assertIn("Systemd service installed: no", text)
             self.assertIn("Linux desktop fallback installed: yes", text)
             self.assertIn("Linux desktop fallback current command: no", text)
-            self.assertIn("Repair: spark autostart install --now", text)
+            self.assertIn("Repair: spark autostart on --now", text)
 
     def test_autostart_status_linux_reports_current_service_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3364,7 +3364,8 @@ class SparkCliTests(unittest.TestCase):
         self.assertIn("spark live start", output)
         self.assertIn("spark live status", output)
         self.assertIn("spark providers test --role chat", output)
-        self.assertIn("spark autostart install --now", output)
+        self.assertIn("spark autostart on --now", output)
+        self.assertIn("spark fix autostart", output)
         self.assertIn("Finish in Telegram", output)
         self.assertIn("Choose /access 3", output)
         self.assertIn("/diagnose", output)
@@ -3394,6 +3395,8 @@ class SparkCliTests(unittest.TestCase):
         self.assertIn("Level 4 - Full Access", output)
         self.assertIn("operating-system access", output)
         self.assertIn("spark secrets list", output)
+        self.assertIn("spark fix autostart", output)
+        self.assertIn("spark autostart off", output)
 
     def test_guide_json_is_agent_readable(self) -> None:
         args = build_parser().parse_args(["guide", "--json"])
@@ -3413,6 +3416,10 @@ class SparkCliTests(unittest.TestCase):
             [item["role"] for item in payload["setup"]["llm_roles"]],
             ["default", "agent", "mission"],
         )
+        operator_commands = {item["command"] for item in payload["operator_commands"]}
+        self.assertIn("spark fix autostart", operator_commands)
+        self.assertIn("spark autostart on --now", operator_commands)
+        self.assertIn("spark autostart off", operator_commands)
 
     def test_setup_default_bundle_registers_starter_stack(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3558,7 +3565,7 @@ class SparkCliTests(unittest.TestCase):
                 self.assertEqual(cmd_setup(args), 0)
             setup_output = stdout.getvalue()
             self.assertIn("Spark is installed. Your first run:", setup_output)
-            self.assertIn("spark autostart install --now", setup_output)
+            self.assertIn("spark autostart on --now", setup_output)
             self.assertIn("Pick an access level", setup_output)
             self.assertIn("/access 3", setup_output)
             self.assertIn("spark verify --onboarding", setup_output)
@@ -7727,6 +7734,9 @@ class SparkCliTests(unittest.TestCase):
         self.assertIn("$SPARK_PREFIX/bin/spark providers test --role chat", script)
         self.assertIn("$SPARK_PREFIX/bin/spark verify --onboarding", script)
         self.assertIn("$SPARK_PREFIX/bin/spark fix telegram", script)
+        self.assertIn("$SPARK_PREFIX/bin/spark fix autostart", script)
+        self.assertIn("$SPARK_PREFIX/bin/spark autostart off", script)
+        self.assertIn("$SPARK_PREFIX/bin/spark autostart on telegram-starter --now", script)
         self.assertIn('spark_setup_cmd+=("--minimax-api-key" "$spark_secret_ref_value")', script)
         self.assertIn("spark_cli.cli", script)
 
@@ -7778,6 +7788,9 @@ class SparkCliTests(unittest.TestCase):
         self.assertIn("spark providers test --role chat", script)
         self.assertIn("spark verify --onboarding", script)
         self.assertIn("spark fix telegram", script)
+        self.assertIn("spark fix autostart", script)
+        self.assertIn("spark autostart off", script)
+        self.assertIn("spark autostart on telegram-starter --now", script)
 
     def test_readme_does_not_recommend_piping_remote_installers_to_shell(self) -> None:
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")

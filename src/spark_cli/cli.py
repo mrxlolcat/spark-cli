@@ -4203,7 +4203,7 @@ def print_setup_next_steps(bundle_name: str, ingress_owner: Module, llm_state: d
     print("     /run say exactly OK")
     print("")
     print("Start Spark automatically when this computer logs in:")
-    print("     spark autostart install --now")
+    print("     spark autostart on --now")
     print("Manual fallback if Spark Live is unavailable:")
     print("     spark start telegram-starter")
     print("")
@@ -4226,7 +4226,7 @@ def print_setup_next_steps(bundle_name: str, ingress_owner: Module, llm_state: d
     print("Anthropic Claude Code is the easiest Claude sign-in route. Run `claude`, verify `claude -p \"hello\"`, then choose `anthropic` in setup.")
     print("Z.AI GLM, Kimi/Moonshot, OpenRouter, MiniMax, Hugging Face, and OpenAI API use API keys; Ollama and LM Studio stay local.")
     print("For role-level control, use --chat-llm-provider, --builder-llm-provider, --memory-llm-provider, and --mission-llm-provider.")
-    print("Need to turn the agent off? Run `spark stop telegram-starter` or `spark autostart uninstall`.")
+    print("Need to turn the agent off? Run `spark stop telegram-starter` or `spark autostart off`.")
     print("Run `spark guide` anytime for BotFather, LLM, access levels, module, and Telegram command help.")
 
 
@@ -6629,11 +6629,11 @@ def collect_simple_fix_payload(target: str) -> dict[str, Any]:
                 {
                     "name": "login startup",
                     "ok": True,
-                    "detail": "Use autostart status/install to make Spark Live start when the computer logs in.",
+                    "detail": "Use autostart status/on to make Spark Live start when the computer logs in.",
                     "repair": "",
                 }
             ],
-            "next_commands": ["spark autostart status", "spark autostart install --now", "spark live status"],
+            "next_commands": ["spark autostart status", "spark autostart on --now", "spark fix autostart", "spark live status"],
         },
     }
     return recipes[target]
@@ -6707,7 +6707,7 @@ def collect_autostart_fix_payload() -> dict[str, Any]:
             "name": "OS login hook",
             "ok": installed,
             "detail": "At least one OS login autostart hook is installed." if installed else "No OS login autostart hook is installed.",
-            "repair": "spark autostart install --now",
+            "repair": "spark autostart on --now",
         },
         {
             "name": "current startup target",
@@ -6717,7 +6717,7 @@ def collect_autostart_fix_payload() -> dict[str, Any]:
                 if installed and not stale_hooks
                 else "One or more installed autostart hook(s) look stale or writable by other local users."
             ),
-            "repair": "spark autostart install --now",
+            "repair": "spark autostart on --now",
         },
         {
             "name": "Telegram profile selection",
@@ -6740,7 +6740,7 @@ def collect_autostart_fix_payload() -> dict[str, Any]:
         "telegram_profiles_manual": manual,
         "next_commands": [
             "spark autostart status",
-            "spark autostart install --now",
+            "spark autostart on --now",
             "spark autostart off",
             "spark live status",
         ],
@@ -9392,7 +9392,7 @@ def print_autostart_file_audit(label: str, path: Path, *, expected_command: str)
     for warning in warnings:
         print(f"{label} warning: {warning}")
     if warnings:
-        print("Repair: spark autostart install --now")
+        print("Repair: spark autostart on --now")
     return warnings
 
 
@@ -9630,7 +9630,7 @@ def cmd_autostart_profile(args: argparse.Namespace) -> int:
     state_text = "will start when Spark Live starts" if enabled else "will stay manual at login"
     print(f"Telegram profile {profile}: {state_text}.")
     print("Refresh OS startup with:")
-    print("  spark autostart install --now")
+    print("  spark autostart on --now")
     return 0
 
 
@@ -10249,6 +10249,7 @@ def onboarding_guide_payload() -> dict[str, Any]:
         ],
         "setup": {
             "interactive": "spark setup",
+            "autostart_default": "spark setup installs login autostart by default; use spark setup --no-autostart to keep Spark manual.",
             "botfather": [
                 "Open Telegram and message @BotFather.",
                 "Send /newbot and follow BotFather's prompts.",
@@ -10294,7 +10295,8 @@ def onboarding_guide_payload() -> dict[str, Any]:
                 "Run: spark live start",
                 "Run: spark live status",
                 "Run: spark providers test --role chat",
-                "To start Spark automatically when this computer logs in, run: spark autostart install --now.",
+                "To start Spark automatically when this computer logs in, run: spark autostart on --now.",
+                "If login startup seems stale or missing, run: spark fix autostart.",
             ]},
             {"title": "Finish in Telegram", "steps": [
                 "Send /start to your Spark bot.",
@@ -10305,7 +10307,7 @@ def onboarding_guide_payload() -> dict[str, Any]:
             ]},
         ],
         "start": [
-            "spark autostart install --now",
+            "spark autostart on --now",
             "Open Telegram and send /start to your Spark bot.",
             "Choose /access 3 when Spark asks, unless you want less or more access.",
             "Send /diagnose in Telegram.",
@@ -10342,14 +10344,17 @@ def onboarding_guide_payload() -> dict[str, Any]:
             { "command": "spark verify", "use": "Launch-readiness proof for modules, LLM roles, Telegram long polling, Builder memory, Spawner relay, and running processes." },
             { "command": "spark verify --onboarding", "use": "First-user checklist for Telegram, access level, memory, and a tiny Spawner mission." },
             { "command": "spark fix telegram", "use": "Targeted quiet-bot repair checklist: token, admin ids, memory bridge, LLM roles, process, and logs." },
+            { "command": "spark fix autostart", "use": "Targeted login-startup repair checklist: installed hooks, stale paths, permissions, and Telegram profile selection." },
             { "command": "spark fix spawner", "use": "Targeted repair checklist when /run, Kanban, Canvas, or Mission Control is not reachable." },
             { "command": "spark providers test --role chat", "use": "Send a tiny PING_OK probe through the selected chat LLM." },
             { "command": "spark security audit", "use": "Check secrets, provider wiring, Telegram long polling, and runtime health." },
             { "command": "spark support bundle", "use": "Create a local redacted support archive. Nothing uploads automatically." },
             { "command": "spark doctor --json", "use": "Structured diagnostics for agents and support." },
             { "command": "spark doctor llm \"<problem>\" --save-report", "use": "Ask the user's configured LLM for a redacted repair plan." },
-            { "command": "spark autostart install --now", "use": "Turn on the Telegram agent now and every time this computer logs in." },
-            { "command": "spark autostart status", "use": "Check whether login autostart is installed." },
+            { "command": "spark autostart on --now", "use": "Turn on the Telegram agent now and every time this computer logs in." },
+            { "command": "spark autostart status", "use": "Check whether login autostart is installed and points at the current Spark home." },
+            { "command": "spark autostart profile <profile> off", "use": "Keep one Telegram bot profile manual while the rest of Spark can still start at login." },
+            { "command": "spark autostart off", "use": "Remove OS login autostart while leaving Spark installed." },
             { "command": "spark logs spark-telegram-bot", "use": "Read Telegram gateway logs." },
             { "command": "spark logs spark-telegram-bot --profile qa-bot", "use": "Read logs for a named Telegram bot profile." },
             { "command": "spark logs spawner-ui", "use": "Read mission-control logs." },
@@ -10363,6 +10368,7 @@ def onboarding_guide_payload() -> dict[str, Any]:
             "Bot says admin only: send /myid, add that numeric id during spark setup, then restart.",
             "LLM does not answer: rerun spark setup to choose your default Spark brain, then run spark status.",
             "Fresh install feels incomplete: run spark verify --onboarding and follow the first [FIX] line.",
+            "Login startup is stale or confusing: run spark fix autostart, then spark autostart on --now if needed.",
             "/run fails: start spawner-ui and check spark logs spawner-ui.",
             "Memory does not work: run spark status and repair Spark runtime/domain-chip-memory hints first.",
         ],

@@ -14,7 +14,7 @@ cd spark-cli
 pip install -e .
 
 spark setup
-spark autostart install --now
+spark autostart on --now
 spark status
 ```
 
@@ -103,7 +103,7 @@ The launch docs intentionally avoid piping remote scripts directly into a shell.
 If a good Node/npm is already installed, the installer uses it to avoid a slow first-run download; pass `-ManagedNode` on Windows or `--managed-node` on macOS/Linux to force Spark's verified managed Node runtime.
 Before deploying installer changes, verify the committed script manifest locally with `spark verify --installers`. After deploying `agent.sparkswarm.ai`, run `spark verify --installers --hosted-installers` to catch stale hosted copies.
 
-After setup, the macOS/Linux/WSL installer runs `spark autostart install --now` by default. That starts the Telegram starter stack immediately and installs the operating-system login hook so Spark comes back after the computer logs in. Use `--no-autostart` or `SPARK_AUTOSTART=0` if you only want to install/configure and start Spark manually later.
+After setup, the macOS/Linux/WSL installer runs `spark autostart on --now` by default. That starts the Telegram starter stack immediately and installs the operating-system login hook so Spark comes back after the computer logs in. Use `--no-autostart` or `SPARK_AUTOSTART=0` if you only want to install/configure and start Spark manually later. Run `spark fix autostart` if login startup is missing, stale, or points at an old Spark home.
 
 For scripted setup:
 
@@ -295,7 +295,8 @@ spark verify
 spark verify --deep
 spark fix telegram
 spark providers status
-spark autostart install --now
+spark autostart on --now
+spark fix autostart
 ```
 
 That installs the operating-system login hook and starts the local Spark stack immediately. After that, rebooting or logging back into the computer should bring the Telegram agent back without opening a terminal. Manual fallback:
@@ -347,9 +348,11 @@ Use `spark <cmd> --help` for full flags.
 | `spark start [target]` | Topological launch using `needs.modules` order |
 | `spark start spark-telegram-bot --profile <name>` | Start one named Telegram bot profile |
 | `spark stop [target]` | Reverse-topological stop |
-| `spark autostart install --now` | Start Spark now and automatically at computer login |
-| `spark autostart status` | Show whether the login hook is installed |
-| `spark autostart uninstall` | Remove the login hook |
+| `spark autostart on --now` | Start Spark now and automatically at computer login |
+| `spark autostart status` | Show whether the login hook is installed and points at this Spark home |
+| `spark fix autostart` | Diagnose missing/stale login hooks, permissions, and manual Telegram profiles |
+| `spark autostart profile <name> off` | Keep one Telegram profile manual while Spark autostart stays on |
+| `spark autostart off` | Remove the login hook |
 | `spark status [--json]` | Run module healthchecks with repair hints |
 | `spark doctor [--json]` | Diagnostic variant of status |
 | `spark logs <module>` | Tail `~/.spark/logs/<module>/process.log` |

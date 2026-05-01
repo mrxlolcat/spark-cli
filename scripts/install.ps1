@@ -644,7 +644,7 @@ function Run-Autostart {
         Write-Host "  $sparkCmd start $Bundle"
         Write-Host ""
         Write-Host "To try autostart again:"
-        Write-Host "  $sparkCmd autostart install --now"
+        Write-Host "  $sparkCmd autostart on --now"
     }
 }
 
@@ -700,15 +700,16 @@ function Invoke-Install {
     Write-Host "  spark providers test --role chat"
     Write-Host "  spark verify --onboarding"
     Write-Host "  spark autostart status"
+    Write-Host "  spark fix autostart"
     Write-Host ""
     if ($NoAutostart) {
         Write-Host "Autostart was not installed for this run."
         Write-Host "To enable it later:"
-        Write-Host "  spark autostart install telegram-starter --now"
+        Write-Host "  spark autostart on telegram-starter --now"
     } else {
         Write-Host "Spark autostart is enabled by default so Spark comes back after login."
         Write-Host "To disable it later:"
-        Write-Host "  spark autostart uninstall"
+        Write-Host "  spark autostart off"
     }
     Write-Host ""
     Write-Host "Install log:"

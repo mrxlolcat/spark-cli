@@ -889,7 +889,7 @@ Manual fallback for this session:
   $SPARK_PREFIX/bin/spark start $SPARK_BUNDLE
 
 To try autostart again:
-  $SPARK_PREFIX/bin/spark autostart install --now
+  $SPARK_PREFIX/bin/spark autostart on --now
 EOF
   fi
 }
@@ -947,18 +947,19 @@ Operational checks:
   $SPARK_PREFIX/bin/spark providers test --role chat
   $SPARK_PREFIX/bin/spark verify --onboarding
   $SPARK_PREFIX/bin/spark autostart status
+  $SPARK_PREFIX/bin/spark fix autostart
 
 $(if [ "$SPARK_AUTOSTART" = "1" ]; then
     cat <<AUTOSTART_ON
 Spark autostart is enabled by default so Spark comes back after login.
 To disable it later:
-  $SPARK_PREFIX/bin/spark autostart uninstall
+  $SPARK_PREFIX/bin/spark autostart off
 AUTOSTART_ON
   else
     cat <<AUTOSTART_OFF
 Autostart was not installed for this run.
 To enable it later:
-  $SPARK_PREFIX/bin/spark autostart install telegram-starter --now
+  $SPARK_PREFIX/bin/spark autostart on telegram-starter --now
 AUTOSTART_OFF
   fi)
 
