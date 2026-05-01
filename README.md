@@ -116,7 +116,7 @@ bash ./install.sh \
 
 That command installs and wires the starter stack, but it intentionally does not invent an LLM provider. If no provider is chosen, `spark status` and `spark fix telegram` report the LLM roles as not configured instead of silently falling back to a local model.
 
-To wire LLMs during setup, run interactive `spark setup` and choose from the provider menu. The wizard first asks for Telegram/BotFather values, then asks which single LLM provider should power Spark. That provider is used for chat, Builder, memory, retrieval, and Spawner missions by default, and setup only asks for the key that provider actually needs. Advanced users can split chat, Builder, memory, and mission providers later with the role-specific flags.
+To wire LLMs during setup, run interactive `spark setup` and choose from the provider menu. The wizard first asks for Telegram/BotFather values, then asks which default LLM provider should power Agent and Mission. Agent covers Telegram chat, runtime reasoning, memory, and recall. Mission covers Spawner/Mission Control builds, research, coding, and longer tracked work. Setup only asks for the key the selected provider actually needs, and users can split Agent and Mission during setup if they already know they want different providers.
 
 Spark supports the same onboarding shape on Windows, macOS, Linux, and WSL:
 
@@ -178,9 +178,9 @@ By default, one provider powers everything:
 spark setup --llm-provider zai --zai-api-key @clipboard
 ```
 
-That configures the Agent and Missions together. The Agent includes conversation, Spark reasoning/runtime, memory, and recall. Missions are Spawner builds and longer-running work.
+That configures Agent and Mission together. Agent includes conversation, Spark reasoning/runtime, memory, and recall. Mission covers Spawner builds and longer-running work.
 
-For more control later, split the Agent and Mission brains:
+For more control, split Agent and Mission providers:
 
 ```bash
 spark setup --resume \

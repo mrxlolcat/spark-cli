@@ -10273,7 +10273,7 @@ def onboarding_guide_payload() -> dict[str, Any]:
             },
             {
                 "module": "spark-intelligence-builder",
-                "role": "Runtime brain. Handles identity, memory bridge, provider routing, and domain-chip activation.",
+                "role": "Runtime router. Handles identity, memory bridge, provider routing, and domain-chip activation.",
             },
             {
                 "module": "domain-chip-memory",
