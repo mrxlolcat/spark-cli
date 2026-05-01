@@ -9040,6 +9040,14 @@ def windows_startup_legacy_cmd_path() -> Path:
     return base / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / f"{AUTOSTART_SERVICE_NAME}.cmd"
 
 
+def windows_run_key_path() -> str:
+    return r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def windows_run_key_command(startup_path: Path) -> str:
+    return f'wscript.exe "{startup_path}"'
+
+
 def vbs_string(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
@@ -9067,6 +9075,38 @@ def run_autostart_helper(command: list[str]) -> subprocess.CompletedProcess[str]
 def print_helper_failure(command: list[str], result: subprocess.CompletedProcess[str]) -> None:
     detail = (result.stderr or result.stdout or "").strip()
     print(f"Autostart helper failed ({shell_join(command)}): {detail or f'exit {result.returncode}'}")
+
+
+def install_windows_fallback_autostart(start_command: str) -> tuple[Path, bool]:
+    startup_path = windows_startup_script_path()
+    write_windows_startup_script(startup_path, start_command)
+    legacy_cmd_path = windows_startup_legacy_cmd_path()
+    if legacy_cmd_path.exists():
+        legacy_cmd_path.unlink()
+    run_key_command = [
+        "reg",
+        "add",
+        windows_run_key_path(),
+        "/v",
+        AUTOSTART_WINDOWS_TASK_NAME,
+        "/t",
+        "REG_SZ",
+        "/d",
+        windows_run_key_command(startup_path),
+        "/f",
+    ]
+    result = run_autostart_helper(run_key_command)
+    if result.returncode != 0:
+        print_helper_failure(run_key_command, result)
+        return startup_path, False
+    return startup_path, True
+
+
+def windows_run_key_installed() -> bool:
+    result = run_autostart_helper(
+        ["reg", "query", windows_run_key_path(), "/v", AUTOSTART_WINDOWS_TASK_NAME]
+    )
+    return result.returncode == 0
 
 
 def cmd_autostart_install(args: argparse.Namespace) -> int:
@@ -9159,12 +9199,11 @@ def cmd_autostart_install(args: argparse.Namespace) -> int:
         result = run_autostart_helper(command)
         if result.returncode != 0:
             print_helper_failure(command, result)
-            startup_path = windows_startup_script_path()
-            write_windows_startup_script(startup_path, start_command)
-            legacy_cmd_path = windows_startup_legacy_cmd_path()
-            if legacy_cmd_path.exists():
-                legacy_cmd_path.unlink()
+            startup_path, run_key_installed = install_windows_fallback_autostart(start_command)
             print(f"Installed Windows Startup fallback: {startup_path}")
+            print("Installed Windows Run-key fallback: " + ("yes" if run_key_installed else "no"))
+            if not run_key_installed:
+                failures += 1
             if args.now:
                 now_command = ["cmd", "/c", start_command]
                 result = run_autostart_helper(now_command)
@@ -9237,6 +9276,11 @@ def cmd_autostart_uninstall(_: argparse.Namespace) -> int:
         if legacy_cmd_path.exists():
             legacy_cmd_path.unlink()
             print(f"Removed legacy Windows Startup fallback: {legacy_cmd_path}")
+            failures = 0 if failures else failures
+        run_key_command = ["reg", "delete", windows_run_key_path(), "/v", AUTOSTART_WINDOWS_TASK_NAME, "/F"]
+        result = run_autostart_helper(run_key_command)
+        if result.returncode == 0:
+            print(f"Removed Windows Run-key fallback: {AUTOSTART_WINDOWS_TASK_NAME}")
             failures = 0 if failures else failures
         return 1 if failures else 0
 
@@ -9313,10 +9357,12 @@ def cmd_autostart_status(_: argparse.Namespace) -> int:
         task_installed = result.returncode == 0
         startup_path = windows_startup_script_path()
         startup_installed = startup_path.exists()
-        print("Installed: " + ("yes" if task_installed or startup_installed else "no"))
+        run_key_installed = windows_run_key_installed()
+        print("Installed: " + ("yes" if task_installed or startup_installed or run_key_installed else "no"))
         print("Task installed: " + ("yes" if task_installed else "no"))
         print(f"Startup fallback: {startup_path}")
         print("Startup fallback installed: " + ("yes" if startup_installed else "no"))
+        print("Run-key fallback installed: " + ("yes" if run_key_installed else "no"))
         print(f"Telegram profiles configured: {configured_text}")
         print(f"Telegram profiles in autostart: {profile_text}")
         print(f"Telegram profiles manual/off: {manual_text}")

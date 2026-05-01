@@ -296,6 +296,8 @@ def approval_required_for_command(argv: list[str], context: CommandContext | Non
             confirmation_phrase="approve publish",
         )
 
+    if first == "spark" and lowered[1:3] == ["autostart", "status"]:
+        return _decision(parts, ctx, "none", "none", "`spark autostart status` is read-only.")
     if first == "spark" and second == "autostart":
         return _decision(
             parts,

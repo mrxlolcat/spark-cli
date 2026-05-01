@@ -218,6 +218,9 @@ from spark_cli.cli import (
     autostart_shell_command,
     autostart_shell_commands,
     windows_cmd_c,
+    windows_run_key_command,
+    windows_run_key_installed,
+    windows_run_key_path,
     windows_startup_legacy_cmd_path,
     telegram_profiles_to_start_by_default,
     linux_autostart_path,
@@ -279,6 +282,16 @@ class SparkCliTests(unittest.TestCase):
         decision = approval_required_for_command(["spark", "status"], CommandContext())
         self.assertFalse(decision.requires_approval)
         self.assertEqual(decision.action_class, "none")
+
+    def test_approval_classifier_allows_autostart_status(self) -> None:
+        decision = approval_required_for_command(["spark", "autostart", "status"], CommandContext(non_interactive=True))
+        self.assertFalse(decision.requires_approval)
+        self.assertEqual(decision.action_class, "none")
+
+    def test_approval_classifier_flags_autostart_install(self) -> None:
+        decision = approval_required_for_command(["spark", "autostart", "install"], CommandContext())
+        self.assertTrue(decision.requires_approval)
+        self.assertEqual(decision.action_class, "process_autostart_mutation")
 
     def test_approval_classifier_flags_destructive_delete(self) -> None:
         decision = approval_required_for_command(["rm", "-rf", "/tmp/spark-test"], CommandContext())
@@ -2917,6 +2930,11 @@ class SparkCliTests(unittest.TestCase):
             self.assertRegex(content, r'Environment\("PROCESS"\)\("SPARK_HOME"\) = "C:[/\\]Users[/\\]Example[/\\]\.spark"')
             self.assertIn(r'%ComSpec% /d /s /c ""C:\Users\Example\.spark\bin\spark.cmd"" start telegram-starter', content)
 
+    def test_windows_run_key_command_points_to_startup_script(self) -> None:
+        command = windows_run_key_command(Path(r"C:\Users\Example\Startup\spark-telegram-agent.vbs"))
+        self.assertEqual(command, r'wscript.exe "C:\Users\Example\Startup\spark-telegram-agent.vbs"')
+        self.assertIn("CurrentVersion\\Run", windows_run_key_path())
+
     def test_autostart_install_windows_falls_back_to_startup_folder_when_task_denied(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             startup_script = Path(tmp_dir) / "spark-telegram-agent.vbs"
@@ -2947,9 +2965,70 @@ class SparkCliTests(unittest.TestCase):
             self.assertIn("cmd.exe /c", commands[0][7])
             self.assertIn("start --allow-boot-warnings telegram-starter", commands[0][7])
             self.assertEqual(commands[0][8], "/F")
-            self.assertEqual(commands[1][:2], ["cmd", "/c"])
-            self.assertIn(r"C:\Users\Example\.spark\bin\spark.cmd", commands[1][2])
-            self.assertIn("start --allow-boot-warnings telegram-starter", commands[1][2])
+            self.assertEqual(commands[1][:4], ["reg", "add", windows_run_key_path(), "/v"])
+            self.assertEqual(commands[1][4], "Spark Telegram Agent")
+            self.assertTrue(any("wscript.exe" in item for item in commands[1]))
+            self.assertEqual(commands[2][:2], ["cmd", "/c"])
+            self.assertIn(r"C:\Users\Example\.spark\bin\spark.cmd", commands[2][2])
+            self.assertIn("start --allow-boot-warnings telegram-starter", commands[2][2])
+
+    def test_autostart_status_windows_reports_run_key_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            startup_script = Path(tmp_dir) / "spark-telegram-agent.vbs"
+            startup_script.write_text("Set shell = CreateObject(\"WScript.Shell\")\r\n", encoding="ascii")
+
+            def fake_helper(command: list[str]) -> subprocess.CompletedProcess[str]:
+                if command[:2] == ["schtasks", "/Query"]:
+                    return subprocess.CompletedProcess(command, 1, "", "not found")
+                if command[:2] == ["reg", "query"]:
+                    return subprocess.CompletedProcess(command, 0, "Spark Telegram Agent REG_SZ wscript.exe", "")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            args = build_parser().parse_args(["autostart", "status"])
+            with patch("spark_cli.cli.sys.platform", "win32"), \
+                 patch("spark_cli.cli.windows_startup_script_path", return_value=startup_script), \
+                 patch("spark_cli.cli.run_autostart_helper", side_effect=fake_helper), \
+                 patch("spark_cli.cli.load_json", return_value={"telegram_profiles": {"spark-agi": {"relay_port": 8789}}}), \
+                 patch("sys.stdout", new_callable=StringIO) as output:
+                self.assertEqual(args.func(args), 0)
+
+            text = output.getvalue()
+            self.assertIn("Installed: yes", text)
+            self.assertIn("Task installed: no", text)
+            self.assertIn("Startup fallback installed: yes", text)
+            self.assertIn("Run-key fallback installed: yes", text)
+
+    def test_windows_run_key_installed_uses_reg_query(self) -> None:
+        commands: list[list[str]] = []
+
+        def fake_helper(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch("spark_cli.cli.run_autostart_helper", side_effect=fake_helper):
+            self.assertTrue(windows_run_key_installed())
+
+        self.assertEqual(commands[0], ["reg", "query", windows_run_key_path(), "/v", "Spark Telegram Agent"])
+
+    def test_autostart_uninstall_windows_removes_run_key_fallback(self) -> None:
+        commands: list[list[str]] = []
+
+        def fake_helper(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        args = build_parser().parse_args(["autostart", "uninstall"])
+        with patch("spark_cli.cli.sys.platform", "win32"), \
+             patch("spark_cli.cli.windows_startup_script_path", return_value=Path("C:/missing/spark-telegram-agent.vbs")), \
+             patch("spark_cli.cli.windows_startup_legacy_cmd_path", return_value=Path("C:/missing/spark-telegram-agent.cmd")), \
+             patch("spark_cli.cli.run_autostart_helper", side_effect=fake_helper), \
+             patch("sys.stdout", new_callable=StringIO):
+            self.assertEqual(args.func(args), 0)
+
+        self.assertIn(
+            ["reg", "delete", windows_run_key_path(), "/v", "Spark Telegram Agent", "/F"],
+            commands,
+        )
 
     def test_windows_startup_script_path_uses_appdata(self) -> None:
         with patch.dict(os.environ, {"APPDATA": r"C:\Users\Example\AppData\Roaming"}):
