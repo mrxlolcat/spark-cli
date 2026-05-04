@@ -685,6 +685,11 @@ checkout_cli_ref() {
     git -C "$target" checkout FETCH_HEAD
     return
   fi
+  if printf '%s' "$SPARK_CLI_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+    git -C "$target" fetch --depth=1 origin '+refs/heads/*:refs/remotes/origin/*'
+    git -C "$target" checkout "$SPARK_CLI_REF"
+    return
+  fi
   git -C "$target" fetch --depth=1 origin "refs/tags/$SPARK_CLI_REF:refs/tags/$SPARK_CLI_REF"
   git -C "$target" checkout "$SPARK_CLI_REF"
 }

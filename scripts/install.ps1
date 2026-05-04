@@ -475,6 +475,17 @@ function Checkout-CliRef {
             return
         }
     }
+    if ($Ref -match "^[0-9a-f]{40}$") {
+        git -C $Target fetch --depth=1 origin "+refs/heads/*:refs/remotes/origin/*"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not fetch Spark CLI branch heads for commit ref: $Ref"
+        }
+        git -C $Target checkout $Ref
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not checkout Spark CLI commit ref: $Ref"
+        }
+        return
+    }
     git -C $Target fetch --depth=1 origin "refs/tags/${Ref}:refs/tags/${Ref}"
     if ($LASTEXITCODE -ne 0) {
         throw "Could not fetch Spark CLI ref: $Ref"

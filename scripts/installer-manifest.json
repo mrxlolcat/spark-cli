@@ -3,11 +3,11 @@
   "installers": {
     "install.sh": {
       "path": "scripts/install.sh",
-      "sha256": "f1ee82533d44da1b6b80db9b14309d1e4e0ac03ac8102fdf155743b8f86f7f35"
+      "sha256": "0e2e94a360cf343c5b460ce7e6712338c6e888262b6d888a68ec2ee2cc9ea159"
     },
     "install.ps1": {
       "path": "scripts/install.ps1",
-      "sha256": "3c864f50a7f7576193cac46b58213477bba9d9a4e0146d3d50219b5597e0c025"
+      "sha256": "f95cee47c58fdafb261e2f10fd5e2ad11e45c01cf5d619e91754ef97e4b3b4a2"
     }
   }
 }
