@@ -5326,6 +5326,24 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(result["healthcheck_command"], "GET http://127.0.0.1:8080/api/health/live")
         run_runtime.assert_not_called()
 
+    def test_external_telegram_health_skips_local_bot_token_check(self) -> None:
+        module = Module(
+            name="spark-telegram-bot",
+            path=Path("C:/tmp/spark-telegram-bot"),
+            manifest={
+                "module": {"name": "spark-telegram-bot", "version": "1.0.0", "kind": "service", "plane": "ingress"},
+                "healthcheck": {"command": "npm run health:polling"},
+            },
+        )
+
+        with patch("spark_cli.cli.telegram_ingress_is_external", return_value=True), \
+             patch("spark_cli.cli.run_runtime_command") as run_runtime:
+            result = evaluate_module_health(module)
+
+        self.assertTrue(result["healthy"])
+        self.assertIn("Telegram ingress is external", result["detail"])
+        run_runtime.assert_not_called()
+
     def test_direct_node_package_script_argv_resolves_ts_node_without_cmd_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

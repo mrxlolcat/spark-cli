@@ -4347,6 +4347,18 @@ def evaluate_module_health(module: Module) -> dict[str, Any]:
             "failure_hint": failure_hint,
             "success_hint": success_hint,
         }
+    if module.name == "spark-telegram-bot" and telegram_ingress_is_external():
+        return {
+            "name": module.name,
+            "version": module.version,
+            "kind": module.kind,
+            "plane": module.plane,
+            "healthy": True,
+            "detail": "Telegram ingress is external; this Spark Live runtime does not store or poll the bot token.",
+            "healthcheck_command": None,
+            "failure_hint": None,
+            "success_hint": "External Telegram ingress owner is expected to run its own healthcheck.",
+        }
     command = module.healthcheck_command
     if not command:
         return {
