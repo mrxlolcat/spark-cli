@@ -18,6 +18,14 @@ require_env() {
   fi
 }
 
+looks_like_telegram_bot_token() {
+  printf '%s' "$1" | grep -Eq '^[0-9]{6,}:'
+}
+
+looks_like_telegram_admin_ids() {
+  printf '%s' "$1" | grep -Eq '[0-9]{5,}'
+}
+
 is_public_spawner_bind() {
   local host="${SPARK_SPAWNER_HOST:-0.0.0.0}"
   [ "$host" = "0.0.0.0" ] || [ "$host" = "::" ] || [ -n "${SPARK_ALLOWED_HOSTS:-}" ]
@@ -80,6 +88,12 @@ case "$telegram_mode" in
     require_env TELEGRAM_ADMIN_IDS
     ;;
   external)
+    if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && looks_like_telegram_bot_token "$TELEGRAM_BOT_TOKEN"; then
+      die "SPARK_LIVE_TELEGRAM_MODE=external but TELEGRAM_BOT_TOKEN looks like a real bot token. Put the token only on spark-telegram-bot."
+    fi
+    if [ -n "${TELEGRAM_ADMIN_IDS:-}" ] && looks_like_telegram_admin_ids "$TELEGRAM_ADMIN_IDS"; then
+      die "SPARK_LIVE_TELEGRAM_MODE=external but TELEGRAM_ADMIN_IDS looks like real admin IDs. Put admin IDs only on spark-telegram-bot."
+    fi
     log "Using external Telegram ingress owner; Spark Live will not require or start a local bot poller."
     ;;
   *)
