@@ -243,6 +243,39 @@ into chat; query-string secrets can leak through browser history and request
 logs.
 `SPARK_BRIDGE_API_KEY` protects mission-start/control APIs.
 
+## Hardened VPS Compose
+
+For VPS hosts where you control Docker runtime flags, start from
+`docker/live/docker-compose.vps.yml`. It uses the Docker hardening controls that
+the hosted audit checks for:
+
+- `security_opt: no-new-privileges:true`
+- `cap_drop: [ALL]`
+- `read_only: true`
+- tmpfs `/tmp`
+- one writable Spark state mount at `/data/spark`
+
+Before the first start, create the state directory and give it to the `spark`
+image UID. This avoids needing root capabilities inside the running container:
+
+```bash
+cd docker/live
+mkdir -p spark-data
+sudo chown -R 1001:1001 spark-data
+cp spark-live.env.example spark-live.env
+```
+
+Then put the same Railway-style variables in `spark-live.env` and start:
+
+```bash
+docker compose -f docker-compose.vps.yml up -d --build
+docker compose -f docker-compose.vps.yml exec spark-live spark security audit --hosted
+```
+
+If you need the entrypoint to repair an existing root-owned volume, do that as a
+one-time maintenance step without `cap_drop: [ALL]`, then restore the hardened
+Compose file before running the public service.
+
 After deploy:
 
 1. Open the Railway logs and confirm `Spark Live is running`.
