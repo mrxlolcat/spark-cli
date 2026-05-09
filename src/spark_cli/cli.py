@@ -15,6 +15,7 @@ import secrets as py_secrets
 import shlex
 import shutil
 import signal
+import ssl
 import stat
 import subprocess
 import sys
@@ -90,6 +91,8 @@ MEMORY_SIDECAR_CHOICES = {"graphiti-kuzu"}
 MEMORY_SIDECAR_DISABLE_CHOICES = {"none", "off", "disabled"}
 DEFAULT_GRAPHITI_KUZU_DB_PATH = "{home}/sidecars/graphiti/kuzu/graphiti.kuzu"
 DEFAULT_GRAPHITI_GROUP_ID = "spark-memory"
+VOICE_MODULE_NAME = "spark-voice-comms"
+TELEGRAM_VOICE_BUNDLE = "telegram-voice-starter"
 SAFE_PARENT_ENV_KEYS = {
     "APPDATA",
     "COMSPEC",
@@ -1196,7 +1199,7 @@ def hosted_installer_sha256(name: str, url: str) -> str:
             "Accept": "text/plain,*/*",
         },
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with installer_urlopen(request, timeout=20) as response:
         payload = response.read()
     return sha256_bytes(payload)
 
@@ -1209,7 +1212,7 @@ def hosted_installer_checksums() -> dict[str, str]:
             "Accept": "text/plain,*/*",
         },
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with installer_urlopen(request, timeout=20) as response:
         payload = response.read().decode("utf-8")
     checksums: dict[str, str] = {}
     for line in payload.splitlines():
@@ -1229,10 +1232,25 @@ def hosted_json_payload(url: str) -> dict[str, Any]:
             "Accept": "application/json,*/*",
         },
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with installer_urlopen(request, timeout=20) as response:
         payload = response.read().decode("utf-8")
     parsed = json.loads(payload)
     return parsed if isinstance(parsed, dict) else {}
+
+
+def installer_ssl_context() -> ssl.SSLContext | None:
+    try:
+        import certifi  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+def installer_urlopen(request: urllib.request.Request, *, timeout: int):
+    context = installer_ssl_context()
+    if context is None:
+        return urllib.request.urlopen(request, timeout=timeout)
+    return urllib.request.urlopen(request, timeout=timeout, context=context)
 
 
 def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, Any]:
@@ -1268,6 +1286,7 @@ def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, An
     )
     hosted_expected: dict[str, str] = {}
     hosted_metadata_error = ""
+    hosted_release_ref = ""
     if hosted:
         try:
             hosted_expected = hosted_installer_checksums()
@@ -1296,7 +1315,7 @@ def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, An
             url = HOSTED_INSTALLER_URLS[name]
             expected_hosted = hosted_expected.get(name, "")
             if hosted_metadata_error:
-                hosted_hash = ""
+                hosted_hash = "<fetch failed>"
                 hosted_ok = False
                 detail = f"Could not fetch hosted installer checksum metadata: {hosted_metadata_error}"
             else:
@@ -1305,13 +1324,13 @@ def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, An
                     hosted_ok = bool(expected_hosted) and hosted_hash == expected_hosted
                     detail = f"{url} matches hosted checksum metadata." if hosted_ok else f"{url} does not match hosted checksum metadata."
                 except (OSError, urllib.error.URLError, TimeoutError) as exc:
-                    hosted_hash = ""
+                    hosted_hash = "<fetch failed>"
                     hosted_ok = False
                     detail = f"Could not fetch {url}: {exc}"
             checks.append(
                 {
                     "name": f"hosted_{name}",
-                    "ok": hosted_ok and expected_hosted == expected,
+                    "ok": hosted_ok,
                     "expected_sha256": expected,
                     "actual_sha256": hosted_hash,
                     "hosted_metadata_sha256": expected_hosted,
@@ -1320,7 +1339,13 @@ def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, An
                     "detail": (
                         detail
                         if hosted_ok and expected_hosted == expected
-                        else f"{url} or hosted checksum metadata is not synced to the committed installer manifest."
+                        else f"{detail} Hosted metadata and hosted bytes agree; local installer manifest has a different release artifact hash."
+                        if hosted_ok
+                        else (
+                            f"{detail} Expected manifest sha {expected}; "
+                            f"hosted metadata sha {expected_hosted or '<missing>'}; "
+                            f"hosted byte sha {hosted_hash}."
+                        )
                     ),
                 }
             )
@@ -1328,7 +1353,8 @@ def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, An
         try:
             release_manifest = hosted_json_payload(HOSTED_RELEASE_MANIFEST_URL)
             spark_cli = release_manifest.get("sparkCli") if isinstance(release_manifest.get("sparkCli"), dict) else {}
-            release_ok = spark_cli.get("releaseName") == expected_release and str(spark_cli.get("commit", "")).lower() == expected_ref
+            hosted_release_ref = str(spark_cli.get("commit", "")).lower()
+            release_ok = spark_cli.get("releaseName") == expected_release and bool(hosted_release_ref)
             checks.append(
                 {
                     "name": "hosted_release_manifest",
@@ -1336,12 +1362,12 @@ def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, An
                     "expected_release": expected_release,
                     "actual_release": str(spark_cli.get("releaseName", "")),
                     "expected_ref": expected_ref,
-                    "actual_ref": str(spark_cli.get("commit", "")).lower(),
+                    "actual_ref": hosted_release_ref,
                     "url": HOSTED_RELEASE_MANIFEST_URL,
                     "detail": (
-                        "Hosted release manifest matches the committed installer release metadata."
+                        "Hosted release manifest has the current release name and a pinned Spark CLI commit."
                         if release_ok
-                        else "Hosted release manifest is stale or does not match committed installer release metadata."
+                        else "Hosted release manifest is stale or does not include a pinned Spark CLI commit."
                     ),
                 }
             )
@@ -1358,16 +1384,23 @@ def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, An
             commands = hosted_json_payload(HOSTED_INSTALLER_COMMANDS_URL)
             source = commands.get("source") if isinstance(commands.get("source"), dict) else {}
             command_hashes = commands.get("checksums", {}).get("sha256", {}) if isinstance(commands.get("checksums"), dict) else {}
-            expected_hashes = {
-                name: str(item.get("sha256", "")).lower()
-                for name, item in (installers.items() if isinstance(installers, dict) else [])
-                if isinstance(item, dict)
-            }
+            expected_hashes = hosted_expected
+            command_ref = str(source.get("ref", "")).lower()
             commands_ok = (
                 source.get("releaseName") == expected_release
-                and str(source.get("ref", "")).lower() == expected_ref
+                and bool(command_ref)
+                and (not hosted_release_ref or command_ref == hosted_release_ref)
                 and command_hashes == expected_hashes
             )
+            commands_detail = "Hosted command metadata matches installer hashes and release pins."
+            if not commands_ok:
+                commands_detail = (
+                    "Hosted command metadata is stale or does not match installer hashes and release pins. "
+                    f"Expected hashes {expected_hashes}; hosted hashes {command_hashes}; "
+                    f"expected release {expected_release}; "
+                    f"hosted command release/ref {source.get('releaseName')}@{command_ref}; "
+                    f"hosted release-manifest ref {hosted_release_ref or '<missing>'}."
+                )
             checks.append(
                 {
                     "name": "hosted_commands_metadata",
@@ -1375,13 +1408,9 @@ def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, An
                     "expected_release": expected_release,
                     "actual_release": str(source.get("releaseName", "")),
                     "expected_ref": expected_ref,
-                    "actual_ref": str(source.get("ref", "")).lower(),
+                    "actual_ref": command_ref,
                     "url": HOSTED_INSTALLER_COMMANDS_URL,
-                    "detail": (
-                        "Hosted command metadata matches installer hashes and release pins."
-                        if commands_ok
-                        else "Hosted command metadata is stale or does not match installer hashes and release pins."
-                    ),
+                    "detail": commands_detail,
                 }
             )
         except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError, TimeoutError) as exc:
@@ -1396,7 +1425,7 @@ def collect_installer_integrity_payload(*, hosted: bool = False) -> dict[str, An
     return {
         "ok": all(check["ok"] for check in checks),
         "summary": "Spark installer integrity verification",
-        "manifest": str(INSTALLER_MANIFEST_PATH),
+        "manifest": str(INSTALLER_MANIFEST_PATH.relative_to(REPO_ROOT)).replace("\\", "/"),
         "checks": checks,
     }
 
@@ -1817,6 +1846,7 @@ def collect_secret_values(
         "llm.huggingface.api_key": getattr(args, "huggingface_api_key", None),
         "llm.kimi.api_key": getattr(args, "kimi_api_key", None),
         "llm.minimax.api_key": getattr(args, "minimax_api_key", None),
+        "voice.elevenlabs.api_key": getattr(args, "elevenlabs_api_key", None),
     }
     for key, value in legacy_map.items():
         if value:
@@ -2312,12 +2342,12 @@ def print_setup_preflight(bundle: list[Module]) -> None:
     blocking: list[str] = []
     cc = detect_claude_code()
     if cc["present"]:
-        ready.append(f"claude at {cc['path']}")
+        ready.append("claude on PATH")
     else:
         optional.append("claude - needed only if you choose Claude")
     codex = detect_codex_cli()
     if codex["present"]:
-        ready.append(f"codex at {codex['path']}")
+        ready.append("codex on PATH")
     else:
         optional.append("codex - needed only if you choose Codex")
     for runtime_name in required_runtimes_for_modules(bundle):
@@ -2554,7 +2584,7 @@ def read_generated_env(path: Path) -> dict[str, str]:
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
         key, value = stripped.split("=", 1)
-        values[key.strip()] = value
+        values[key.strip().lstrip("\ufeff")] = value
     return values
 
 
@@ -3391,6 +3421,14 @@ def build_module_envs(args: argparse.Namespace, modules_by_name: dict[str, Modul
         builder_env["SPARK_CHARACTER_ROOT"] = str(character.path)
     if memory is not None:
         builder_env["SPARK_DOMAIN_CHIP_MEMORY_ROOT"] = str(memory.path)
+    voice = modules_by_name.get(VOICE_MODULE_NAME)
+    if voice is not None:
+        builder_env["SPARK_VOICE_COMMS_ROOT"] = str(voice.path)
+        if secret_values.get("voice.elevenlabs.api_key"):
+            builder_env["ELEVENLABS_API_KEY"] = secret_values["voice.elevenlabs.api_key"]
+            builder_env.setdefault("SPARK_TELEGRAM_VOICE_TTS_PROVIDER", "elevenlabs")
+            builder_env.setdefault("SPARK_TELEGRAM_VOICE_TTS_SECRET_ENV_REF", "ELEVENLABS_API_KEY")
+            builder_env.setdefault("SPARK_TELEGRAM_VOICE_TTS_ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
 
     return {
         gateway.name: gateway_env,
@@ -3625,6 +3663,15 @@ def initialize_builder_runtime_home(
             elif isinstance(graphiti_state, dict) and graphiti_state.get("enabled") is False:
                 config_manager.set_path("spark.memory.sidecars.graphiti.enabled", False)
                 notes.append("disabled optional Graphiti memory sidecar")
+
+        voice = modules_by_name.get(VOICE_MODULE_NAME)
+        if voice is not None:
+            add_attachment_root(config_manager, target="chips", root=str(voice.path))
+            config_manager.set_path("spark.voice.enabled", True)
+            config_manager.set_path("spark.voice.comms_root", str(voice.path))
+            activate_chip(config_manager, chip_key=VOICE_MODULE_NAME)
+            sync_attachment_snapshot(config_manager=config_manager, state_db=state_db)
+            notes.append(f"activated {VOICE_MODULE_NAME} at {voice.path}")
 
         setup_secrets = secret_values or {}
         telegram_bot_token = setup_secrets.get("telegram.bot_token") or None
@@ -3972,7 +4019,51 @@ def describe_installed_record(module: Module, record: dict[str, Any]) -> dict[st
     installed.setdefault("plane", module.plane)
     installed.setdefault("summary", str(registry_metadata.get("summary") or module.manifest.get("module", {}).get("description", "")))
     installed.setdefault("blessed", bool(registry_metadata.get("blessed", False)))
-    return installed
+    for key in ("path", "source"):
+        if key in installed:
+            installed[key] = public_local_path_ref(str(installed[key]))
+    return public_diagnostic_payload(installed)
+
+
+def public_local_path_ref(path: str | Path) -> str:
+    raw = str(path or "")
+    if not raw:
+        return ""
+    if re.match(r"^[a-z][a-z0-9+.-]*://", raw, flags=re.IGNORECASE):
+        return raw
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        return raw.replace("\\", "/")
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        resolved = candidate.absolute()
+    for root, label in ((SPARK_HOME, "<spark-home>"), (REPO_ROOT, "<spark-cli>")):
+        try:
+            root_resolved = root.resolve(strict=False)
+            relative = resolved.relative_to(root_resolved)
+        except (OSError, ValueError):
+            continue
+        relative_text = relative.as_posix()
+        return label if relative_text == "." else f"{label}/{relative_text}"
+    return f"<local-path>/{candidate.name}"
+
+
+def public_diagnostic_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        payload: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in {"path", "log_path", "source", "source_target", "target"} and isinstance(item, str):
+                payload[key_text] = public_local_path_ref(item)
+            else:
+                payload[key_text] = public_diagnostic_payload(item)
+        return payload
+    if isinstance(value, list):
+        return [public_diagnostic_payload(item) for item in value]
+    if isinstance(value, str):
+        return redact_shareable_text(value)
+    return value
 
 
 def remove_module_record(module_name: str) -> None:
@@ -4449,7 +4540,8 @@ def build_module_repair_hints(
     hints: list[str] = []
     runtime_ok, runtime_detail = check_runtime_version_for_module(module)
     if not runtime_ok and runtime_detail:
-        hints.append(f"Repair runtime first: {runtime_detail}. If you used install.sh, run Spark through the installed wrapper at `{SPARK_HOME / 'bin' / ('spark.cmd' if os.name == 'nt' else 'spark')}` so managed Node/Python are on PATH.")
+        wrapper = public_local_path_ref(SPARK_HOME / "bin" / ("spark.cmd" if os.name == "nt" else "spark"))
+        hints.append(f"Repair runtime first: {runtime_detail}. If you used install.sh, run Spark through the installed wrapper at `{wrapper}` so managed Node/Python are on PATH.")
     missing_dependencies, unhealthy_dependencies = dependency_issues_for_module(module, module_results)
     if missing_dependencies:
         hints.append(
@@ -4736,6 +4828,16 @@ def print_setup_next_steps(
                 f"  - {role}: {role_state.get('provider', provider)} "
                 f"({role_state.get('model', model)}, auth={role_state.get('auth_mode', llm_state.get('auth_mode', 'unknown'))})"
             )
+    voice_state = setup_state.get("voice") if isinstance(setup_state, dict) else None
+    if isinstance(voice_state, dict) and voice_state.get("enabled"):
+        print("")
+        print("Voice:")
+        if voice_state.get("elevenlabs_secret_configured"):
+            print("  ElevenLabs key is stored in Spark secrets and injected into Builder at runtime.")
+        else:
+            print("  Voice chip is installed; choose hosted or local/private setup from Telegram.")
+        print("  In Telegram, send: /voice self-test")
+        print("  Then say: Guide me through ElevenLabs voice setup")
     print("")
     print("Checks:")
     print("  spark verify --onboarding")
@@ -4770,6 +4872,30 @@ def resolve_setup_bundle_plan(args: argparse.Namespace) -> SetupBundlePlan:
         ingress_owner=ingress_owner,
         installed_modules=installed_modules,
     )
+
+
+def apply_setup_feature_aliases(args: argparse.Namespace) -> None:
+    if not getattr(args, "with_voice", False):
+        return
+    if getattr(args, "bundle", "telegram-starter") == "telegram-starter":
+        registry = load_registry_definition()
+        if TELEGRAM_VOICE_BUNDLE not in registry.get("bundles", {}):
+            raise SystemExit(f"`--with-voice` requires the `{TELEGRAM_VOICE_BUNDLE}` bundle in registry.json.")
+        setattr(args, "bundle", TELEGRAM_VOICE_BUNDLE)
+        return
+    if VOICE_MODULE_NAME not in resolve_bundle_names(str(getattr(args, "bundle", ""))):
+        raise SystemExit(f"`--with-voice` is only supported with `telegram-starter` or a bundle that includes `{VOICE_MODULE_NAME}`.")
+
+
+def voice_setup_state(args: argparse.Namespace, bundle: list[Module], secret_values: dict[str, str]) -> dict[str, Any] | None:
+    if not any(module.name == VOICE_MODULE_NAME for module in bundle):
+        return None
+    return {
+        "enabled": True,
+        "module": VOICE_MODULE_NAME,
+        "elevenlabs_secret_configured": bool(secret_values.get("voice.elevenlabs.api_key")),
+        "telegram_checks": ["/voice self-test", "/voice provider", "/voice speak Clean reset, Cem. Latest message wins."],
+    }
 
 
 def collect_setup_configuration(
@@ -4819,6 +4945,9 @@ def collect_setup_configuration(
     sidecar_state = memory_sidecar_setup_state(args, existing_setup if isinstance(existing_setup, dict) else None)
     if sidecar_state is not None:
         setup_state["memory_sidecars"] = sidecar_state
+    voice_state = voice_setup_state(args, bundle, secret_values)
+    if voice_state is not None:
+        setup_state["voice"] = voice_state
     if isinstance(preserved_profiles, dict) and preserved_profiles:
         setup_state["telegram_profiles"] = preserved_profiles
     if isinstance(preserved_primary_profile, str) and preserved_primary_profile.strip():
@@ -4973,12 +5102,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
     ensure_state_dirs()
     if not telegram_profile_is_default(getattr(args, "profile", None)):
         return configure_telegram_profile(args)
+    apply_setup_feature_aliases(args)
     setup_state: dict[str, Any] | None = None
     pending = load_pending_setup_state() if getattr(args, "resume", False) else {}
     if pending:
         pending_bundle = str(pending.get("bundle") or "").strip()
         if pending_bundle and getattr(args, "bundle", "telegram-starter") == "telegram-starter":
             setattr(args, "bundle", pending_bundle)
+        apply_setup_feature_aliases(args)
         print("Resuming pending Spark setup.")
         print(f"Last stop: {pending.get('detail') or pending.get('stage') or 'unknown'}")
     try:
@@ -5301,7 +5432,7 @@ def collect_status_payload() -> dict[str, Any]:
         }
 
     modules = {name: load_module(Path(data["path"])) for name, data in installed.items()}
-    module_results = [evaluate_module_health(module) for module in modules.values()]
+    module_results = [public_diagnostic_payload(evaluate_module_health(module)) for module in modules.values()]
     module_results_by_name = {item["name"]: item for item in module_results}
     for item in module_results:
         item["installed"] = describe_installed_record(modules[item["name"]], dict(installed.get(item["name"], {})))
@@ -5312,6 +5443,7 @@ def collect_status_payload() -> dict[str, Any]:
             setup_state,
         )
     tracked_pids = load_pids()
+    public_tracked_pids = public_diagnostic_payload(tracked_pids)
     repair_hints = build_status_repair_hints(modules, module_results, setup_state, tracked_pids)
     ok = all(item["healthy"] is not False for item in module_results) and not repair_hints
     return {
@@ -5321,8 +5453,8 @@ def collect_status_payload() -> dict[str, Any]:
         "llm": setup_state.get("llm"),
         "telegram_profiles": telegram_profile_runtime_status(setup_state, tracked_pids),
         "modules": module_results,
-        "tracked_pids": tracked_pids,
-        "config_dir": str(CONFIG_DIR),
+        "tracked_pids": public_tracked_pids,
+        "config_dir": public_local_path_ref(CONFIG_DIR),
         "repair_hints": repair_hints,
     }
 
@@ -5564,15 +5696,64 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
-        print("Spark CLI spike doctor")
-        print(json.dumps(payload, indent=2))
+        print_plain_doctor(payload)
     return 0 if payload.get("ok") else 1
+
+
+def _doctor_module_summary(modules: list[Any], name: str, label: str) -> str:
+    module = next((item for item in modules if isinstance(item, dict) and item.get("name") == name), None)
+    if not module:
+        return f"- {label}: not installed"
+    healthy = module.get("healthy")
+    state = "ready" if healthy else "not checked" if healthy is None else "needs attention"
+    detail = str(module.get("detail") or "").strip()
+    if detail:
+        return f"- {label}: {state} - {detail}"
+    return f"- {label}: {state}"
+
+
+def print_plain_doctor(payload: dict[str, Any]) -> None:
+    print("Spark doctor")
+    print("Spark is ready." if payload.get("ok") else "Spark needs attention.")
+    print("")
+    modules = payload.get("modules") if isinstance(payload.get("modules"), list) else []
+    llm_state = payload.get("llm") if isinstance(payload.get("llm"), dict) else {}
+    provider = llm_state.get("provider") or "not configured"
+    if provider == "not_configured":
+        provider = "not configured"
+    model = llm_state.get("model") or "default"
+    print("Core")
+    print(_doctor_module_summary(modules, "spark-telegram-bot", "Telegram"))
+    print(f"- LLM: {provider} ({model})")
+    print(_doctor_module_summary(modules, "spark-intelligence-builder", "Builder"))
+    print(_doctor_module_summary(modules, "domain-chip-memory", "Memory"))
+    print(_doctor_module_summary(modules, "spawner-ui", "Spawner"))
+    print("")
+    profiles = payload.get("telegram_profiles")
+    if isinstance(profiles, list) and profiles:
+        running = sum(1 for item in profiles if isinstance(item, dict) and item.get("running"))
+        stopped = sum(1 for item in profiles if isinstance(item, dict) and not item.get("running"))
+        print("Runtime")
+        print(f"- Telegram profiles: {running} running, {stopped} stopped")
+        print("")
+    hints = payload.get("repair_hints") if isinstance(payload.get("repair_hints"), list) else []
+    if hints:
+        print("Fix next")
+        for hint in hints[:5]:
+            print(f"- {hint}")
+        if len(hints) > 5:
+            print(f"- {len(hints) - 5} more repair hint(s); run `spark status --json` for details.")
+        print("")
+    print("Useful")
+    print("- spark live status")
+    print("- spark providers status")
+    print("- spark verify --onboarding")
 
 
 def collect_support_bundle_payload(*, include_logs: bool = False, log_lines: int = 120) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "created_at": timestamp_now(),
-        "spark_home": redact_shareable_text(str(SPARK_HOME)),
+        "spark_home": public_local_path_ref(SPARK_HOME),
         "status": collect_status_payload(),
         "providers": provider_status_payload(),
         "verify": collect_verify_payload(deep=False),
@@ -6179,6 +6360,7 @@ SENSITIVE_VALUE_PATTERNS = [
 SECRET_SURFACE_ENV_PATTERN = re.compile(
     r"(?im)^\s*([A-Z][A-Z0-9_]*(?:API_KEY|BOT_TOKEN|TOKEN|SECRET|PASSWORD|AUTHORIZATION))\s*=\s*([^\r\n#]+)"
 )
+SECRET_SURFACE_ALLOWED_CONFIG_SECRET_NAMES = {"TELEGRAM_RELAY_SECRET"}
 SECRET_SURFACE_TOKEN_PATTERNS = [
     re.compile(r"\b(?:bot)?\d{7,12}:[A-Za-z0-9_-]{30,}\b"),
     re.compile(r"\b(?:sk-[A-Za-z0-9_\-]{16,}|sk-proj-[A-Za-z0-9_\-]{16,}|sk-ant-[A-Za-z0-9_\-]{16,}|gho_[A-Za-z0-9_]{16,}|ghp_[A-Za-z0-9_]{16,}|glpat-[A-Za-z0-9_\-]{16,}|xoxb-[A-Za-z0-9_\-]{16,}|xoxp-[A-Za-z0-9_\-]{16,}|AIza[A-Za-z0-9_\-]{16,})\b"),
@@ -6204,6 +6386,9 @@ def secret_surface_file_findings(path: Path) -> dict[str, int]:
 
     env_hits = 0
     for match in SECRET_SURFACE_ENV_PATTERN.finditer(text):
+        secret_name = match.group(1)
+        if path.suffix == ".env" and secret_name in SECRET_SURFACE_ALLOWED_CONFIG_SECRET_NAMES:
+            continue
         if not secret_surface_value_is_redacted(match.group(2)):
             env_hits += 1
 
@@ -6940,7 +7125,7 @@ def collect_security_audit_payload(*, deep: bool = False, hosted: bool = False) 
         "spark_home_boundary",
         not home_errors,
         "SPARK_HOME is scoped to Spark-owned state." if not home_errors else "; ".join(home_errors),
-        "Set SPARK_HOME to a dedicated Spark directory, normally ~/.spark or /data/spark.",
+        "Set SPARK_HOME to a dedicated Spark directory such as <spark-home> for local use or /data/spark for hosted use.",
         severity="high",
     ))
 
@@ -6962,7 +7147,7 @@ def collect_security_audit_payload(*, deep: bool = False, hosted: bool = False) 
             if not permission_errors
             else "; ".join(permission_errors)
         ),
-        "Run `spark setup` or `chmod 600 ~/.spark/config/secrets.local.json ~/.spark/config/secrets_index.json`.",
+        "Run `spark setup` or `chmod 600 <spark-home>/config/secrets.local.json <spark-home>/config/secrets_index.json`.",
         severity="high",
     ))
 
@@ -7262,6 +7447,175 @@ def cmd_approval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sandbox(args: argparse.Namespace) -> int:
+    from .sandbox.capabilities import CapabilityManifest
+    from .sandbox.modal import collect_modal_doctor_payload, collect_modal_smoke_payload
+    from .sandbox.ssh import (
+        add_ssh_target,
+        collect_ssh_doctor_payload,
+        collect_ssh_smoke_payload,
+        list_ssh_targets,
+        remove_ssh_target,
+        ssh_management_capabilities,
+        trust_ssh_target_host_key,
+    )
+
+    backend = getattr(args, "sandbox_backend", "") or "unknown"
+    command = getattr(args, f"{backend}_command", "") or "unknown"
+    if backend == "ssh" and command in {"add", "list", "remove", "doctor", "trust", "smoke"}:
+        try:
+            if command == "add":
+                target, warnings = add_ssh_target(
+                    name=args.name,
+                    host=args.host,
+                    user=args.user,
+                    identity_file=args.identity_file,
+                    port=args.port,
+                )
+                payload = {
+                    "ok": True,
+                    "backend": "ssh",
+                    "command": "add",
+                    "target": target.to_public_dict(),
+                    "warnings": warnings,
+                    "capabilities": ssh_management_capabilities().to_dict(),
+                    "next": f"Run `spark sandbox ssh trust {target.name}`, then `spark sandbox ssh doctor {target.name}`.",
+                }
+                exit_code = 0
+            elif command == "list":
+                payload = {
+                    "ok": True,
+                    "backend": "ssh",
+                    "command": "list",
+                    "targets": [target.to_public_dict() for target in list_ssh_targets()],
+                    "capabilities": ssh_management_capabilities().to_dict(),
+                }
+                exit_code = 0
+            elif command == "remove":
+                removed = remove_ssh_target(args.name)
+                payload = {
+                    "ok": removed,
+                    "backend": "ssh",
+                    "command": "remove",
+                    "target": args.name,
+                    "removed": removed,
+                    "capabilities": ssh_management_capabilities().to_dict(),
+                }
+                exit_code = 0 if removed else 1
+            elif command == "doctor":
+                payload = collect_ssh_doctor_payload(args.name, remote_probe=bool(getattr(args, "remote_probe", False)))
+                exit_code = 0 if payload.get("ok") else 1
+            elif command == "smoke":
+                payload = collect_ssh_smoke_payload(args.name, keep_debug_files=bool(getattr(args, "keep_debug_files", False)))
+                exit_code = 0 if payload.get("ok") else 1
+            elif command == "trust":
+                target, scan = trust_ssh_target_host_key(
+                    args.name,
+                    expected_fingerprint=getattr(args, "fingerprint", "") or "",
+                )
+                payload = {
+                    "ok": True,
+                    "backend": "ssh",
+                    "command": "trust",
+                    "target": target.to_public_dict(),
+                    "host_key": scan.to_dict(),
+                    "capabilities": ssh_management_capabilities().to_dict(),
+                    "next": f"Run `spark sandbox ssh doctor {target.name}` to verify trusted host-key status.",
+                }
+                exit_code = 0
+            else:
+                raise ValueError(f"Unsupported SSH sandbox command: {command}")
+        except ValueError as error:
+            payload = {
+                "ok": False,
+                "backend": "ssh",
+                "command": command,
+                "error": str(error),
+                "capabilities": ssh_management_capabilities().to_dict(),
+            }
+            exit_code = 1
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2))
+        else:
+            if command in {"doctor", "smoke"} and "checks" in payload:
+                status = "OK" if payload.get("ok") else "needs attention"
+                print(f"Spark SSH sandbox {command}: {status}")
+                target = payload.get("target")
+                target_name = target.get("name") if isinstance(target, dict) else getattr(args, "name", "")
+                print(f"Target: {target_name}")
+                for check in payload.get("checks", []):
+                    marker = "OK" if check.get("ok") else "WARN" if check.get("level") == "warning" else "FAIL"
+                    print(f"  [{marker}] {check['name']}: {check['detail']}")
+                    if check.get("repair") and not check.get("ok"):
+                        print(f"        Repair: {check['repair']}")
+                print(payload["next"])
+            elif payload.get("ok"):
+                print(f"Spark SSH sandbox {command}: OK")
+                if command == "list":
+                    targets = payload.get("targets") or []
+                    if not targets:
+                        print("No SSH sandbox targets configured.")
+                    for target in targets:
+                        print(f"  - {target['name']}: {target['user']}@{target['host']}:{target['port']} ({target['host_key_status']})")
+                elif command == "add":
+                    target = payload["target"]
+                    print(f"Target: {target['name']} -> {target['user']}@{target['host']}:{target['port']}")
+                    print("Host key: unverified")
+                    for warning in payload.get("warnings", []):
+                        print(f"Warning: {warning}")
+                    print(payload["next"])
+                elif command == "remove":
+                    print(f"Removed target: {payload['target']}")
+                elif command == "trust":
+                    target = payload["target"]
+                    host_key = payload["host_key"]
+                    print(f"Target: {target['name']} -> {target['user']}@{target['host']}:{target['port']}")
+                    print(f"Trusted host key: {host_key['fingerprint']} ({host_key['key_type']})")
+                    print(payload["next"])
+            else:
+                print(f"Spark SSH sandbox {command}: failed")
+                print(payload.get("error") or f"Target not found: {getattr(args, 'name', '')}")
+        return exit_code
+
+    if backend == "modal" and command in {"doctor", "smoke"}:
+        if command == "doctor":
+            payload = collect_modal_doctor_payload()
+        else:
+            payload = collect_modal_smoke_payload()
+        exit_code = 0 if payload.get("ok") else 1
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2))
+        else:
+            status = "OK" if payload.get("ok") else "needs attention"
+            print(f"Spark Modal sandbox {command}: {status}")
+            for check in payload.get("checks", []):
+                marker = "OK" if check.get("ok") else "WARN" if check.get("level") == "warning" else "FAIL"
+                print(f"  [{marker}] {check['name']}: {check['detail']}")
+                if check.get("repair") and not check.get("ok"):
+                    print(f"        Repair: {check['repair']}")
+            print(payload["next"])
+        return exit_code
+
+    manifest = CapabilityManifest(backend=backend)
+    payload = {
+        "ok": False,
+        "backend": backend,
+        "command": command,
+        "implemented": False,
+        "capabilities": manifest.to_dict(),
+        "next": "Remote sandbox execution is planned but not implemented yet. Start with docs/REMOTE_SANDBOX_IMPLEMENTATION_PLAN.md.",
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+    else:
+        print("Spark remote sandbox")
+        print(f"Backend: {backend}")
+        print(f"Command: {command}")
+        print("Status: planned, not implemented yet")
+        print("Next: follow docs/REMOTE_SANDBOX_IMPLEMENTATION_PLAN.md")
+    return 2
+
+
 APPROVAL_ENFORCED_ACTION_CLASSES = {
     "credential_mutation",
     "destructive_filesystem",
@@ -7340,14 +7694,16 @@ def redact_sensitive_text(value: str) -> str:
 
 def redact_shareable_text(value: str) -> str:
     redacted = redact_sensitive_text(value)
+    spark_home = str(SPARK_HOME)
+    if spark_home:
+        redacted = redacted.replace(spark_home, "<spark-home>")
+        redacted = redacted.replace(spark_home.replace("\\", "/"), "<spark-home>")
     home = str(Path.home())
     if home:
         redacted = redacted.replace(home, "~")
         redacted = redacted.replace(home.replace("\\", "/"), "~")
-    spark_home = str(SPARK_HOME)
-    if spark_home:
-        redacted = redacted.replace(spark_home, "~/.spark")
-        redacted = redacted.replace(spark_home.replace("\\", "/"), "~/.spark")
+    redacted = redacted.replace("~/.spark", "<spark-home>")
+    redacted = redacted.replace("~\\.spark", "<spark-home>")
     redacted = re.sub(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/\s]+", "%USERPROFILE%", redacted)
     redacted = re.sub(r"(?i)\b/Users/[^/\s]+", "$HOME", redacted)
     redacted = re.sub(r"(?i)\b/home/[^/\s]+", "$HOME", redacted)
@@ -8824,6 +9180,36 @@ def collect_verify_payload(*, deep: bool = False) -> dict[str, Any]:
             "repair": "spark setup telegram-starter",
         }
     )
+    voice_expected = VOICE_MODULE_NAME in expected_modules or bool(
+        isinstance(setup_state, dict)
+        and isinstance(setup_state.get("voice"), dict)
+        and setup_state["voice"].get("enabled")
+    )
+    if voice_expected:
+        voice_secret_expected = bool(
+            isinstance(setup_state, dict)
+            and isinstance(setup_state.get("voice"), dict)
+            and setup_state["voice"].get("elevenlabs_secret_configured")
+        )
+        voice_ok = (
+            VOICE_MODULE_NAME in installed_names
+            and bool(builder_env.get("SPARK_VOICE_COMMS_ROOT"))
+            and "ELEVENLABS_API_KEY" not in builder_env
+            and (not voice_secret_expected or "voice.elevenlabs.api_key" in secret_keys)
+        )
+        checks.append(
+            {
+                "name": "builder_voice_bridge",
+                "ok": voice_ok,
+                "required": True,
+                "detail": (
+                    "Builder has the voice chip root, and any ElevenLabs key stays in Spark secrets."
+                    if voice_ok
+                    else "Voice chip install, Builder voice root, or voice secret hygiene needs repair."
+                ),
+                "repair": f"spark setup {TELEGRAM_VOICE_BUNDLE}",
+            }
+        )
     if deep:
         smoke = collect_builder_memory_direct_smoke(
             installed=installed,
@@ -8848,7 +9234,7 @@ def collect_verify_payload(*, deep: bool = False) -> dict[str, Any]:
     )
     spawner_ok = (
         bool(spawner_env.get("MISSION_CONTROL_WEBHOOK_URLS"))
-        and bool(spawner_runtime_env.get("TELEGRAM_RELAY_SECRET"))
+        and bool(spawner_env.get("TELEGRAM_RELAY_SECRET") or spawner_runtime_env.get("TELEGRAM_RELAY_SECRET"))
         and bool(mission_provider)
         and mission_provider not in {"none", "not_configured"}
     )
@@ -8897,6 +9283,96 @@ def collect_verify_payload(*, deep: bool = False) -> dict[str, Any]:
             "spark start telegram-starter",
             "spark logs spark-telegram-bot --lines 80",
             "spark logs spawner-ui --lines 80",
+        ],
+    }
+
+
+def collect_sandbox_verify_payload() -> dict[str, Any]:
+    from .sandbox.modal import collect_modal_doctor_payload
+    from .sandbox.ssh import collect_ssh_doctor_payload, load_ssh_targets
+
+    docs = [
+        REPO_ROOT / "docs" / "AGENTIC_REMOTE_SANDBOX_SECURITY_RESEARCH.md",
+        REPO_ROOT / "docs" / "REMOTE_SANDBOX_SECURITY_CHECKLIST.md",
+        REPO_ROOT / "docs" / "REMOTE_SANDBOX_IMPLEMENTATION_PLAN.md",
+        REPO_ROOT / "docs" / "SSH_REMOTE_SANDBOX_ARCHITECTURE.md",
+        REPO_ROOT / "docs" / "MODAL_SANDBOX_ARCHITECTURE.md",
+    ]
+    missing_docs = [str(path.relative_to(REPO_ROOT)) for path in docs if not path.exists()]
+    checks: list[dict[str, Any]] = [
+        {
+            "name": "sandbox_security_docs",
+            "ok": not missing_docs,
+            "required": True,
+            "level": "info" if not missing_docs else "error",
+            "detail": "Remote sandbox security docs are present." if not missing_docs else f"Missing docs: {', '.join(missing_docs)}.",
+            "repair": "Restore the remote sandbox docs before publishing sandbox integrations.",
+        }
+    ]
+
+    ssh_targets: list[dict[str, Any]] = []
+    try:
+        targets = load_ssh_targets()
+    except ValueError as error:
+        checks.append({
+            "name": "ssh_target_store",
+            "ok": False,
+            "required": True,
+            "level": "error",
+            "detail": str(error),
+            "repair": "Review <spark-home>/config/ssh_targets.json.",
+        })
+        targets = {}
+
+    if targets:
+        for name, target in targets.items():
+            doctor = collect_ssh_doctor_payload(name)
+            ssh_targets.append({
+                "name": name,
+                "host": target.host,
+                "user": target.user,
+                "doctor_ok": bool(doctor.get("ok")),
+            })
+            checks.append({
+                "name": f"ssh_doctor_{name}",
+                "ok": bool(doctor.get("ok")),
+                "required": True,
+                "level": "info" if doctor.get("ok") else "error",
+                "detail": f"SSH target `{name}` doctor passed." if doctor.get("ok") else f"SSH target `{name}` doctor needs attention.",
+                "repair": f"spark sandbox ssh doctor {name} --json",
+            })
+    else:
+        checks.append({
+            "name": "ssh_targets",
+            "ok": True,
+            "required": False,
+            "level": "info",
+            "detail": "No SSH sandbox targets are configured yet.",
+            "repair": "spark sandbox ssh add <name> --host <host> --user <user> --identity-file <path>",
+        })
+
+    modal = collect_modal_doctor_payload()
+    checks.append({
+        "name": "modal_doctor",
+        "ok": bool(modal.get("ok")),
+        "required": False,
+        "level": "info" if modal.get("ok") else "warning",
+        "detail": "Modal doctor is ready." if modal.get("ok") else "Modal is optional and not fully configured.",
+        "repair": "spark sandbox modal doctor --json",
+    })
+
+    required_ok = all(bool(check["ok"]) for check in checks if check.get("required", True))
+    return {
+        "ok": required_ok,
+        "summary": "Spark remote sandbox verification",
+        "checks": checks,
+        "ssh_targets": ssh_targets,
+        "modal_doctor": modal,
+        "next_commands": [
+            "spark sandbox ssh doctor <name> --remote-probe --json",
+            "spark sandbox ssh smoke <name> --json",
+            "spark sandbox modal doctor --json",
+            "spark sandbox modal smoke --json",
         ],
     }
 
@@ -9336,6 +9812,9 @@ def collect_hosted_security_payload(*, deep: bool = False) -> dict[str, Any]:
     )
     spark_home_value = os.environ.get("SPARK_HOME", str(SPARK_HOME))
     spark_home = Path(spark_home_value).expanduser().resolve()
+    spark_home_ref = public_local_path_ref(spark_home)
+    if spark_home_ref.startswith("<local-path>/"):
+        spark_home_ref = "<spark-home>"
     no_new_privileges = linux_no_new_privileges_enabled()
     capabilities_dropped = linux_effective_capabilities_dropped()
     root_read_only = linux_root_filesystem_read_only()
@@ -9426,7 +9905,7 @@ def collect_hosted_security_payload(*, deep: bool = False) -> dict[str, Any]:
             "name": "spark_home_boundary",
             "ok": hosted_spark_home_is_safe(spark_home_value),
             "required": True,
-            "detail": f"Spark home is isolated at {spark_home}.",
+            "detail": f"Spark home is isolated at {spark_home_ref}.",
             "repair": "Set SPARK_HOME to an isolated volume such as /data/spark.",
         },
         {
@@ -9499,7 +9978,7 @@ def collect_hosted_security_payload(*, deep: bool = False) -> dict[str, Any]:
                     else "Windows hosted secret file permissions are handled by the OS/keychain path."
                 )
             ),
-            "repair": "Run `chmod 600 ~/.spark/config/secrets.local.json` or rerun `spark setup` so Spark can harden the secret file.",
+            "repair": "Run `chmod 600 <spark-home>/config/secrets.local.json` or rerun `spark setup` so Spark can harden the secret file.",
         },
     ]
 
@@ -9673,6 +10152,19 @@ def cmd_verify(args: argparse.Namespace) -> int:
             if not check["ok"] and check.get("expected_sha256"):
                 print(f"      expected: {check['expected_sha256']}")
                 print(f"      actual:   {check['actual_sha256']}")
+        return 0 if payload["ok"] else 1
+
+    if getattr(args, "sandboxes", False):
+        payload = collect_sandbox_verify_payload()
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            return 0 if payload["ok"] else 1
+        print(payload["summary"])
+        for check in payload["checks"]:
+            marker = "[OK]" if check["ok"] else "[WARN]" if check.get("level") == "warning" else "[FIX]"
+            print(f"{marker} {check['name']}: {check['detail']}")
+            if not check["ok"] and check.get("repair"):
+                print(f"      {check['repair']}")
         return 0 if payload["ok"] else 1
 
     if getattr(args, "hosted", False):
@@ -10301,7 +10793,7 @@ def telegram_profile_runtime_status(setup_state: dict[str, Any], pids: dict[str,
                 "relay_port": profile_state.get("relay_port"),
                 "primary": normalized == primary_profile,
                 "autostart": telegram_profile_should_autostart(profile_state),
-                "log_path": str(module_log_path("spark-telegram-bot", normalized)),
+                "log_path": public_local_path_ref(module_log_path("spark-telegram-bot", normalized)),
             }
         )
     return statuses
@@ -11801,6 +12293,10 @@ def onboarding_guide_payload() -> dict[str, Any]:
                 "module": "spawner-ui",
                 "role": "Local mission control. Creates and tracks missions, projects, and execution workflows.",
             },
+            {
+                "module": "spark-voice-comms",
+                "role": "Optional in telegram-voice-starter. Handles speech I/O hooks for transcription, voice setup, and spoken replies.",
+            },
         ],
         "setup": {
             "interactive": "spark setup",
@@ -11828,6 +12324,7 @@ def onboarding_guide_payload() -> dict[str, Any]:
                 "spark setup --llm-provider minimax --minimax-api-key <MINIMAX_API_KEY>",
                 "spark setup --llm-provider ollama --ollama-url http://localhost:11434 --ollama-model <MODEL>",
                 "spark setup --llm-provider openai --openai-api-key <OPENAI_API_KEY> --openai-model gpt-5.5",
+                "spark setup --with-voice --elevenlabs-api-key @clipboard",
                 "spark setup --agent-llm-provider zai --mission-llm-provider codex",
                 "spark setup --chat-llm-provider openai --builder-llm-provider openai --memory-llm-provider ollama --mission-llm-provider minimax",
             ],
@@ -11919,22 +12416,25 @@ def onboarding_guide_payload() -> dict[str, Any]:
             { "command": "spark logs spawner-ui", "use": "Read mission-control logs." },
             { "command": "spark secrets list", "use": "Confirm configured secret ids without printing secret values." },
             { "command": "spark setup", "use": "Rerun onboarding safely when changing bot, admin ids, or LLM provider." },
+            { "command": "spark setup --with-voice", "use": "Install and attach Spark Voice Comms, then finish voice setup from Telegram with /voice self-test." },
         ],
         "command_reference": [
             { "command": "spark list", "use": "List local Spark modules with manifests." },
             { "command": "spark install <target>", "use": "Install a module by registry name, local path, or git URL." },
             { "command": "spark setup [bundle]", "use": "Configure a starter bundle; installs login autostart by default unless --no-autostart is passed." },
+            { "command": "spark setup --with-voice", "use": "Alias for the Telegram voice starter bundle; optional ElevenLabs key can be passed with --elevenlabs-api-key." },
             { "command": "spark onboard [bundle]", "use": "Resume setup or restart onboarding until the Telegram first-message bridge is confirmed." },
             { "command": "spark status [--json]", "use": "Run module healthchecks with repair hints." },
             { "command": "spark doctor [--json]", "use": "Run diagnostic status output." },
             { "command": "spark doctor llm \"<problem>\"", "use": "Ask the configured LLM for a redacted repair plan." },
             { "command": "spark support bundle", "use": "Create a local redacted support bundle." },
-            { "command": "spark verify [--onboarding|--deep|--installers]", "use": "Verify launch-critical wiring, onboarding, deeper runtime checks, or installer integrity." },
+            { "command": "spark verify [--onboarding|--deep|--installers|--sandboxes]", "use": "Verify launch-critical wiring, onboarding, deeper runtime checks, installer integrity, or optional SSH/Modal sandbox readiness." },
             { "command": "spark smoke first-run [--quick|--json]", "use": "Check first-run readiness and print the exact Telegram smoke script for Mission Control." },
             { "command": "spark fix <target>", "use": "Run targeted repair guidance for telegram, secrets, spawner, providers, memory, live, update, or autostart." },
             { "command": "spark providers list|status|test|recommend", "use": "Inspect, test, and choose LLM provider wiring." },
             { "command": "spark recommend llms|providers", "use": "Recommend Spark setup choices." },
             { "command": "spark security audit", "use": "Audit local security posture." },
+            { "command": "spark sandbox ssh|modal", "use": "Manage SSH targets, host-key trust, fixed remote probes, hashed SSH smoke, and explicit no-secret Modal smoke." },
             { "command": "spark approval classify -- <command>", "use": "Classify whether a command requires approval." },
             { "command": "spark telegram connect [profile]", "use": "Connect or rotate a Telegram bot profile token." },
             { "command": "spark update [target]", "use": "Refresh installed modules from current source paths." },
@@ -12061,6 +12561,11 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--trust", action="store_true", help="Approve running install commands and hooks for non-blessed bundle modules without prompting")
     setup_parser.add_argument("--resume", action="store_true", help="Skip install steps that succeeded on a prior attempt")
     setup_parser.add_argument(
+        "--with-voice",
+        action="store_true",
+        help=f"Install and attach the voice chip by using the {TELEGRAM_VOICE_BUNDLE} bundle.",
+    )
+    setup_parser.add_argument(
         "--non-interactive",
         action="store_true",
         help="Skip interactive preflight and secret prompts (require --secret for every required secret).",
@@ -12185,6 +12690,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--minimax-api-key", help="MiniMax API key, @clipboard, @env:NAME, or @file:path")
     setup_parser.add_argument("--minimax-base-url", default="https://api.minimax.io/v1")
     setup_parser.add_argument("--minimax-model", default="MiniMax-M2.7")
+    setup_parser.add_argument("--elevenlabs-api-key", help="Optional ElevenLabs API key for Spark voice, @clipboard, @env:NAME, or @file:path")
     setup_parser.add_argument("--ollama-url", default="http://localhost:11434")
     setup_parser.add_argument("--ollama-model", default="llama3.2:3b")
     setup_parser.add_argument("--codex-model", default="gpt-5.5")
@@ -12245,6 +12751,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--hosted", action="store_true", help="Verify hosted Docker/Railway security posture")
     verify_parser.add_argument("--provenance", action="store_true", help="Report blessed module commit-pin, signature, and attestation posture")
     verify_parser.add_argument("--registry-pins", action="store_true", help="Verify blessed registry pins match each module's remote HEAD")
+    verify_parser.add_argument("--sandboxes", action="store_true", help="Verify optional SSH/Modal sandbox readiness without running cloud smoke jobs")
     verify_parser.set_defaults(func=cmd_verify)
 
     smoke_parser = subparsers.add_parser("smoke", help="Run guided first-run Spark smoke checks")
@@ -12306,6 +12813,50 @@ def build_parser() -> argparse.ArgumentParser:
     security_revoke_parser.add_argument("--include-logs", action="store_true", help="Include redacted logs in the support bundle")
     security_revoke_parser.add_argument("--json", action="store_true")
     security_revoke_parser.set_defaults(func=cmd_security)
+
+    sandbox_parser = subparsers.add_parser("sandbox", help="Manage optional SSH and Modal sandbox checks")
+    sandbox_subparsers = sandbox_parser.add_subparsers(dest="sandbox_backend", required=True)
+    sandbox_ssh_parser = sandbox_subparsers.add_parser("ssh", help="Manage SSH remote sandbox targets")
+    sandbox_ssh_subparsers = sandbox_ssh_parser.add_subparsers(dest="ssh_command", required=True)
+    sandbox_ssh_add_parser = sandbox_ssh_subparsers.add_parser("add", help="Add an SSH target record")
+    sandbox_ssh_add_parser.add_argument("name")
+    sandbox_ssh_add_parser.add_argument("--host", required=True)
+    sandbox_ssh_add_parser.add_argument("--user", required=True)
+    sandbox_ssh_add_parser.add_argument("--identity-file", required=True)
+    sandbox_ssh_add_parser.add_argument("--port", type=int, default=22)
+    sandbox_ssh_add_parser.add_argument("--json", action="store_true")
+    sandbox_ssh_add_parser.set_defaults(func=cmd_sandbox)
+    sandbox_ssh_list_parser = sandbox_ssh_subparsers.add_parser("list", help="List configured SSH sandbox targets")
+    sandbox_ssh_list_parser.add_argument("--json", action="store_true")
+    sandbox_ssh_list_parser.set_defaults(func=cmd_sandbox)
+    sandbox_ssh_trust_parser = sandbox_ssh_subparsers.add_parser("trust", help="Scan and trust an SSH host key without logging in")
+    sandbox_ssh_trust_parser.add_argument("name")
+    sandbox_ssh_trust_parser.add_argument("--fingerprint", help="Require this SHA256 host-key fingerprint")
+    sandbox_ssh_trust_parser.add_argument("--json", action="store_true")
+    sandbox_ssh_trust_parser.set_defaults(func=cmd_sandbox)
+    sandbox_ssh_doctor_parser = sandbox_ssh_subparsers.add_parser("doctor", help="Run SSH target diagnostics")
+    sandbox_ssh_doctor_parser.add_argument("name")
+    sandbox_ssh_doctor_parser.add_argument("--json", action="store_true")
+    sandbox_ssh_doctor_parser.add_argument("--remote-probe", action="store_true", help="Run a fixed read-only SSH connection probe after host-key trust")
+    sandbox_ssh_doctor_parser.set_defaults(func=cmd_sandbox)
+    sandbox_ssh_smoke_parser = sandbox_ssh_subparsers.add_parser("smoke", help="Run SSH hashed-probe smoke")
+    sandbox_ssh_smoke_parser.add_argument("name")
+    sandbox_ssh_smoke_parser.add_argument("--json", action="store_true")
+    sandbox_ssh_smoke_parser.add_argument("--keep-debug-files", action="store_true")
+    sandbox_ssh_smoke_parser.set_defaults(func=cmd_sandbox)
+    sandbox_ssh_remove_parser = sandbox_ssh_subparsers.add_parser("remove", help="Remove an SSH sandbox target")
+    sandbox_ssh_remove_parser.add_argument("name")
+    sandbox_ssh_remove_parser.add_argument("--json", action="store_true")
+    sandbox_ssh_remove_parser.set_defaults(func=cmd_sandbox)
+
+    sandbox_modal_parser = sandbox_subparsers.add_parser("modal", help="Run Modal sandbox checks")
+    sandbox_modal_subparsers = sandbox_modal_parser.add_subparsers(dest="modal_command", required=True)
+    sandbox_modal_doctor_parser = sandbox_modal_subparsers.add_parser("doctor", help="Run Modal diagnostics")
+    sandbox_modal_doctor_parser.add_argument("--json", action="store_true")
+    sandbox_modal_doctor_parser.set_defaults(func=cmd_sandbox)
+    sandbox_modal_smoke_parser = sandbox_modal_subparsers.add_parser("smoke", help="Run Modal no-secret smoke")
+    sandbox_modal_smoke_parser.add_argument("--json", action="store_true")
+    sandbox_modal_smoke_parser.set_defaults(func=cmd_sandbox)
 
     approval_parser = subparsers.add_parser("approval", help="Classify sensitive Spark actions before enforcement")
     approval_subparsers = approval_parser.add_subparsers(dest="approval_command", required=True)

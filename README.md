@@ -27,6 +27,22 @@ That default setup installs:
 - `spawner-ui`
 - `spark-telegram-bot`
 
+Voice is available as an opt-in starter path:
+
+```bash
+spark setup --with-voice
+```
+
+or directly:
+
+```bash
+spark setup telegram-voice-starter
+```
+
+Add `--elevenlabs-api-key @clipboard` if you want hosted ElevenLabs TTS configured during setup. The key is stored in Spark secrets and injected into Builder at runtime; it is not written into Telegram config.
+
+Public builder labs such as `spark-domain-chip-labs` and `spark-personality-chip-labs` are available separately, but they are not automatic starter-bundle modules yet. Spark Swarm Workspace/network submission is private/upcoming and is not required for local recursive Builder chip loops.
+
 If another `spark` binary is already on your PATH, use `spark-local`. The package exposes both names to the same entrypoint.
 
 ## What Spark CLI Does
@@ -102,6 +118,7 @@ The Windows installer adds `~\.spark\bin` to your user PATH so a new CMD or Powe
 The launch docs intentionally avoid piping remote scripts directly into a shell. The installer also verifies the managed Node archive against Node's published `SHASUMS256.txt` before extraction.
 If a good Node/npm is already installed, the installer uses it to avoid a slow first-run download; pass `-ManagedNode` on Windows or `--managed-node` on macOS/Linux to force Spark's verified managed Node runtime.
 Before deploying installer changes, verify the committed script manifest locally with `spark verify --installers`. After deploying `agent.sparkswarm.ai`, run `spark verify --installers --hosted-installers` to catch stale hosted copies, stale hosted checksums, stale `/install/commands.json`, and stale `/install/release-manifest.json`.
+For production pushes, use the full gate in [docs/LAUNCH_RUNBOOK.md](./docs/LAUNCH_RUNBOOK.md) so installer, sandbox, hosted, and paired-repo checks ship together.
 
 After setup, the macOS/Linux/WSL installer runs `spark autostart on --now` by default. That starts the Telegram starter stack immediately and installs the operating-system login hook so Spark comes back after the computer logs in. Use `--no-autostart` or `SPARK_AUTOSTART=0` if you only want to install/configure and start Spark manually later. Run `spark fix autostart` if login startup is missing, stale, or points at an old Spark home.
 
@@ -169,6 +186,20 @@ spark setup --resume --memory-sidecars graphiti-kuzu
 ```
 
 This writes Builder config for `spark.memory.sidecars.graphiti.*`, installs `domain-chip-memory[graphiti-kuzu]` unless `--skip-install-commands` is present, and keeps current-state/entity-state memory authoritative until the sidecar has evidence.
+
+To install Spark with Telegram voice onboarding, run:
+
+```bash
+spark setup --with-voice
+```
+
+For hosted ElevenLabs voice during setup:
+
+```bash
+spark setup --with-voice --elevenlabs-api-key @clipboard
+```
+
+After setup, open Telegram and send `/voice self-test`. Then say `Guide me through ElevenLabs voice setup` or `I care more about local/private`.
 
 Use `--memory-sidecars none` to explicitly disable the optional Graphiti sidecar profile.
 
@@ -280,6 +311,7 @@ Setup writes the shared env that makes the pieces talk to each other:
 - Telegram receives `SPARK_BUILDER_HOME`, `SPARK_BUILDER_REPO`, and `SPARK_BUILDER_BRIDGE_MODE=required`, so memory commands go through Builder instead of a local no-op adapter.
 - Telegram, Spawner, and Builder get selected non-secret LLM provider metadata for chat, builder, memory, and mission roles.
 - Builder is initialized with `spark-character`, memory enabled, `shadow_mode=false`, `domain-chip-memory` active, and `spark-researcher` connected.
+- `spark setup --with-voice` uses the `telegram-voice-starter` bundle, installs `spark-voice-comms`, and activates it in Builder through the same attachment system as memory.
 - Cloud API keys are stored through Spark's secret backend and are not written into generated module env files. OpenAI can also use a signed-in Codex CLI, and Anthropic can use Claude Code through `claude -p`, when those CLIs are installed and signed in.
 
 The older dashboard/resonance API is intentionally not part of the launch starter path. Fresh installs should not require `SPARK_API_URL`, `SPARK_DASHBOARD_URL`, or a local service on port `8787`.
@@ -346,7 +378,7 @@ Use `spark <cmd> --help` for full flags.
 | `spark doctor [--json]` | Diagnostic variant of status |
 | `spark doctor llm "<problem>"` | Ask the configured LLM for a redacted local repair plan |
 | `spark support bundle` | Create a local redacted support bundle |
-| `spark verify [--onboarding\|--deep\|--installers]` | Verify launch wiring, onboarding, runtime checks, or installer integrity |
+| `spark verify [--onboarding\|--deep\|--installers\|--sandboxes]` | Verify launch wiring, onboarding, runtime checks, installer integrity, or optional sandbox readiness |
 | `spark fix <target>` | Repair checklist for `telegram`, `secrets`, `spawner`, `providers`, `memory`, `live`, `update`, or `autostart` |
 | `spark providers list\|status\|test\|recommend` | Inspect, test, and choose LLM provider wiring |
 | `spark recommend llms\|providers` | Recommend setup choices |
@@ -410,6 +442,7 @@ Before publishing registry or installer changes, also run:
 python -m spark_cli.cli verify --installers --json
 python -m spark_cli.cli verify --registry-pins --json
 python -m spark_cli.cli verify --provenance --json
+python -m spark_cli.cli verify --sandboxes --json
 ```
 
 For installer releases, green means the full public release surface is ready, not just that unit tests passed. The final post-site-deploy check is:
@@ -447,12 +480,36 @@ docker build -f docker/live/Dockerfile -t spark-live:local .
 
 See [docs/SPARK_LIVE_DOCKER_RAILWAY.md](./docs/SPARK_LIVE_DOCKER_RAILWAY.md) for Docker, Railway, and VPS setup notes.
 
+SSH and Modal are optional compatibility lanes for user-owned VPS/GPU hosts and
+ephemeral cloud sandboxes. Start with verification, then run explicit smoke
+commands only when you intend to touch a remote host or Modal account:
+
+```bash
+spark verify --sandboxes --json
+spark sandbox ssh add <name> --host <host> --user <user> --identity-file <path>
+spark sandbox ssh trust <name>
+spark sandbox ssh doctor <name> --remote-probe --json
+spark sandbox ssh smoke <name> --json
+spark sandbox modal doctor --json
+spark sandbox modal smoke --json
+```
+
+- [docs/AGENTIC_REMOTE_SANDBOX_SECURITY_RESEARCH.md](./docs/AGENTIC_REMOTE_SANDBOX_SECURITY_RESEARCH.md) - source-backed threat model from Hermes, OpenClaw, Codex, Modal, OpenSSH, Docker, OWASP, and NCSC
+- [docs/OWASP_AGENTIC_SECURITY_DEEP_DIVE.md](./docs/OWASP_AGENTIC_SECURITY_DEEP_DIVE.md) - deeper OWASP ASI, LLM, MCP, and Agentic Skills mapping for Spark controls and tests
+- [docs/REMOTE_SANDBOX_SECURITY_CHECKLIST.md](./docs/REMOTE_SANDBOX_SECURITY_CHECKLIST.md) - implementation gate for remote execution, secrets, network, artifacts, and deploys
+- [docs/REMOTE_SANDBOX_IMPLEMENTATION_PLAN.md](./docs/REMOTE_SANDBOX_IMPLEMENTATION_PLAN.md) - phased build plan and current implementation status
+- [docs/SSH_REMOTE_SANDBOX_ARCHITECTURE.md](./docs/SSH_REMOTE_SANDBOX_ARCHITECTURE.md) - secure SSH remote-machine doctor, trust, remote probe, and hashed smoke
+- [docs/MODAL_SANDBOX_ARCHITECTURE.md](./docs/MODAL_SANDBOX_ARCHITECTURE.md) - Modal ephemeral doctor and explicit no-secret smoke
+- [docs/SAFE_SANDBOX_AGENT_GUIDE.md](./docs/SAFE_SANDBOX_AGENT_GUIDE.md) - agent-facing guidance for safely recommending SSH, Modal, Railway, and VPS lanes
+- [docs/FUTURE_INSTALLER_SANDBOX_OPTIONS.md](./docs/FUTURE_INSTALLER_SANDBOX_OPTIONS.md) - future opt-in installer sandbox UX, not shipped yet
+- [docs/SANDBOX_TEST_RUNBOOK_2026-05-09.md](./docs/SANDBOX_TEST_RUNBOOK_2026-05-09.md) - detailed operator checklist for SSH, Modal, Railway/VPS, and Telegram sandbox tests
+- [docs/SANDBOX_TEST_EVIDENCE_TEMPLATE.md](./docs/SANDBOX_TEST_EVIDENCE_TEMPLATE.md) - evidence sheet for recording pass/fail results without leaking secrets
+
 ## More Docs
 
 - [docs/SPARK_ECOSYSTEM_LAUNCH.md](./docs/SPARK_ECOSYSTEM_LAUNCH.md) - public launch contract
 - [docs/SPARK_MAINTAINABILITY_GOVERNANCE_2026-04-26.md](./docs/SPARK_MAINTAINABILITY_GOVERNANCE_2026-04-26.md) - cross-repo maintainability rules, redlines, and session protocol
 - [docs/OPTIONAL_DOCKER_WORKBENCH.md](./docs/OPTIONAL_DOCKER_WORKBENCH.md) - optional Docker dev and sandbox workbench
-- [docs/SPARK_LIVE_DOCKER_RAILWAY.md](./docs/SPARK_LIVE_DOCKER_RAILWAY.md) - realtime Spark Live container lane for Docker, Railway, and VPS sandboxes
 - [docs/SPARK_NORMIE_ONBOARDING_AND_GATEWAY_TEST.md](./docs/SPARK_NORMIE_ONBOARDING_AND_GATEWAY_TEST.md) - step-by-step install and real-time Telegram gateway test
 - [docs/LAUNCH_RUNBOOK.md](./docs/LAUNCH_RUNBOOK.md) - release-day verification
 - [docs/LAUNCH_SECURITY_AUDIT_2026-04-24.md](./docs/LAUNCH_SECURITY_AUDIT_2026-04-24.md) - launch security audit
