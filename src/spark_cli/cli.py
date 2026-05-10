@@ -7491,6 +7491,7 @@ def cmd_access(args: argparse.Namespace) -> int:
 
 def cmd_sandbox(args: argparse.Namespace) -> int:
     from .sandbox.capabilities import CapabilityManifest
+    from .sandbox.docker import collect_docker_doctor_payload
     from .sandbox.modal import collect_modal_doctor_payload, collect_modal_smoke_payload
     from .sandbox.ssh import (
         add_ssh_target,
@@ -7630,6 +7631,22 @@ def cmd_sandbox(args: argparse.Namespace) -> int:
         else:
             status = "OK" if payload.get("ok") else "needs attention"
             print(f"Spark Modal sandbox {command}: {status}")
+            for check in payload.get("checks", []):
+                marker = "OK" if check.get("ok") else "WARN" if check.get("level") == "warning" else "FAIL"
+                print(f"  [{marker}] {check['name']}: {check['detail']}")
+                if check.get("repair") and not check.get("ok"):
+                    print(f"        Repair: {check['repair']}")
+            print(payload["next"])
+        return exit_code
+
+    if backend == "docker" and command == "doctor":
+        payload = collect_docker_doctor_payload()
+        exit_code = 0 if payload.get("ok") else 1
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2))
+        else:
+            status = "OK" if payload.get("ok") else "needs attention"
+            print(f"Spark Docker sandbox doctor: {status}")
             for check in payload.get("checks", []):
                 marker = "OK" if check.get("ok") else "WARN" if check.get("level") == "warning" else "FAIL"
                 print(f"  [{marker}] {check['name']}: {check['detail']}")
@@ -12870,8 +12887,14 @@ def build_parser() -> argparse.ArgumentParser:
     access_setup_parser.add_argument("--json", action="store_true")
     access_setup_parser.set_defaults(func=cmd_access)
 
-    sandbox_parser = subparsers.add_parser("sandbox", help="Manage optional SSH and Modal sandbox checks")
+    sandbox_parser = subparsers.add_parser("sandbox", help="Manage optional Docker, SSH, and Modal sandbox checks")
     sandbox_subparsers = sandbox_parser.add_subparsers(dest="sandbox_backend", required=True)
+    sandbox_docker_parser = sandbox_subparsers.add_parser("docker", help="Run Docker sandbox readiness checks")
+    sandbox_docker_subparsers = sandbox_docker_parser.add_subparsers(dest="docker_command", required=True)
+    sandbox_docker_doctor_parser = sandbox_docker_subparsers.add_parser("doctor", help="Run Docker diagnostics")
+    sandbox_docker_doctor_parser.add_argument("--json", action="store_true")
+    sandbox_docker_doctor_parser.set_defaults(func=cmd_sandbox)
+
     sandbox_ssh_parser = sandbox_subparsers.add_parser("ssh", help="Manage SSH remote sandbox targets")
     sandbox_ssh_subparsers = sandbox_ssh_parser.add_subparsers(dest="ssh_command", required=True)
     sandbox_ssh_add_parser = sandbox_ssh_subparsers.add_parser("add", help="Add an SSH target record")

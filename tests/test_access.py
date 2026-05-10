@@ -10,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from spark_cli.cli import build_parser, cmd_access
+from spark_cli.cli import cmd_sandbox
+from spark_cli.sandbox.docker import collect_docker_doctor_payload
 
 
 class AccessSetupTests(unittest.TestCase):
@@ -57,6 +59,34 @@ class AccessSetupTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["recommended"]["id"], "docker")
         self.assertEqual(payload["recommended"]["setup_mode"], "automatic")
+
+    def test_docker_doctor_reports_missing_cli_without_installing_anything(self) -> None:
+        with patch("spark_cli.sandbox.docker.shutil.which", return_value=None):
+            payload = collect_docker_doctor_payload()
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["backend"], "docker")
+        self.assertEqual(payload["checks"][0]["name"], "docker_cli")
+        self.assertIn("Install Docker", payload["next"])
+
+    def test_sandbox_docker_doctor_cli_json_runs_payload(self) -> None:
+        args = build_parser().parse_args(["sandbox", "docker", "doctor", "--json"])
+        stdout = StringIO()
+        with patch("spark_cli.sandbox.docker.collect_docker_doctor_payload", return_value={
+            "ok": True,
+            "backend": "docker",
+            "command": "doctor",
+            "checks": [],
+            "capabilities": {},
+            "next": "done",
+        }) as collect, redirect_stdout(stdout):
+            exit_code = cmd_sandbox(args)
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["backend"], "docker")
+        collect.assert_called_once_with()
 
 
 if __name__ == "__main__":
