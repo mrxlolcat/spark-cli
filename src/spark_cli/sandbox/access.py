@@ -110,7 +110,7 @@ def access_lane_payload(
             "label": "Docker Sandbox",
             "available": docker_ready,
             "setup_mode": "automatic" if docker_ready else "guided",
-            "spark_cli_action": "spark access setup --with docker" if docker_ready else "spark access setup --with docker",
+            "spark_cli_action": "spark access setup --with docker" if docker_ready else "spark sandbox docker doctor",
             "user_message": "Docker is ready for stronger isolation." if docker_ready else "Docker is optional; Spark can guide setup when a task needs it.",
             "os_hint": docker_os_hint(family),
         },
@@ -177,4 +177,3 @@ def access_lane_payload(
         "lanes": lanes,
         "next": recommended["spark_cli_action"],
     }
-
