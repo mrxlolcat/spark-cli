@@ -13,6 +13,7 @@ from spark_cli.system_map import (
     build_memory_movement_index,
     count_safe_jsonl,
     inspect_builder_event_samples,
+    inspect_builder_trace_health,
     inspect_builder_trace_groups,
     safe_builder_event_value,
     summarize_pids,
@@ -270,6 +271,71 @@ class SparkSystemMapTests(unittest.TestCase):
         self.assertTrue(str(redacted).startswith("trace_ref:redacted:"))
         self.assertNotIn("8319079055", str(redacted))
         self.assertEqual(safe_builder_event_value("trace_ref", "trace-1"), "trace-1")
+
+    def test_builder_trace_health_reports_counts_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            builder_home = Path(tmp) / "spark-intelligence"
+            builder_home.mkdir()
+            conn = sqlite3.connect(builder_home / "state.db")
+            try:
+                conn.execute(
+                    """
+                    create table builder_events(
+                        event_id text,
+                        created_at text,
+                        event_type text,
+                        status text,
+                        severity text,
+                        request_id text,
+                        trace_ref text,
+                        parent_event_id text,
+                        summary text,
+                        facts_json text
+                    )
+                    """
+                )
+                rows = [
+                    ("evt-parent", "recorded", "medium", "req-1", "trace-1", None),
+                    ("evt-child", "recorded", "medium", "req-1", "trace-1", "evt-parent"),
+                    ("evt-orphan", "recorded", "medium", "req-2", "trace-2", "missing-parent"),
+                    ("evt-open", "open", "high", None, None, None),
+                ]
+                for event_id, status, severity, request_id, trace_ref, parent_id in rows:
+                    conn.execute(
+                        """
+                        insert into builder_events(
+                            event_id, created_at, event_type, status, severity,
+                            request_id, trace_ref, parent_event_id, summary, facts_json
+                        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            event_id,
+                            "2026-05-10T13:00:00Z",
+                            "route_selected",
+                            status,
+                            severity,
+                            request_id,
+                            trace_ref,
+                            parent_id,
+                            "private health summary",
+                            json.dumps({"message": "private health body"}),
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            health = inspect_builder_trace_health(builder_home)
+
+        encoded = json.dumps(health)
+        self.assertEqual(health["row_count"], 4)
+        self.assertEqual(health["missing_trace_ref_count"], 1)
+        self.assertEqual(health["trace_group_count"], 2)
+        self.assertEqual(health["orphan_parent_event_id_count"], 1)
+        self.assertEqual(health["high_severity_open_count"], 1)
+        self.assertIn("missing_trace_refs", health["health_flags"])
+        self.assertNotIn("private health summary", encoded)
+        self.assertNotIn("private health body", encoded)
 
     def test_os_compile_command_writes_redacted_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -904,6 +904,75 @@ def inspect_builder_trace_groups(
     return out
 
 
+def inspect_builder_trace_health(builder_home: Path) -> dict[str, Any]:
+    db_path = builder_home / "state.db"
+    out: dict[str, Any] = {
+        "source": "builder_events",
+        "path": str(db_path),
+        "exists": db_path.exists(),
+        "redaction": "aggregate trace health counts only; no event bodies, summaries, facts, or provenance read",
+    }
+    if not db_path.exists():
+        return out
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            tables = [row[0] for row in conn.execute("select name from sqlite_master where type='table'")]
+            if "builder_events" not in tables:
+                out["table_exists"] = False
+                return out
+            out["table_exists"] = True
+            columns = [row[1] for row in conn.execute("pragma table_info(builder_events)")]
+            total = int(conn.execute("select count(*) from builder_events").fetchone()[0])
+            out["row_count"] = total
+            for column in ("trace_ref", "request_id", "parent_event_id"):
+                if column in columns:
+                    missing = conn.execute(
+                        f'select count(*) from builder_events where "{column}" is null or trim("{column}") = ""'
+                    ).fetchone()[0]
+                    out[f"missing_{column}_count"] = int(missing)
+            if "trace_ref" in columns:
+                trace_group_count = conn.execute(
+                    "select count(distinct trace_ref) from builder_events where trace_ref is not null and trim(trace_ref) != ''"
+                ).fetchone()[0]
+                out["trace_group_count"] = int(trace_group_count)
+            if {"severity", "status"}.issubset(columns):
+                high_open = conn.execute(
+                    """
+                    select count(*) from builder_events
+                    where lower(coalesce(severity, '')) in ('high', 'critical')
+                      and lower(coalesce(status, '')) in ('open', 'failed', 'error', 'blocked')
+                    """
+                ).fetchone()[0]
+                out["high_severity_open_count"] = int(high_open)
+            if {"event_id", "parent_event_id"}.issubset(columns):
+                orphaned = conn.execute(
+                    """
+                    select count(*) from builder_events child
+                    where child.parent_event_id is not null
+                      and trim(child.parent_event_id) != ''
+                      and not exists (
+                        select 1 from builder_events parent where parent.event_id = child.parent_event_id
+                      )
+                    """
+                ).fetchone()[0]
+                out["orphan_parent_event_id_count"] = int(orphaned)
+            flags = []
+            if int(out.get("missing_trace_ref_count") or 0):
+                flags.append("missing_trace_refs")
+            if int(out.get("orphan_parent_event_id_count") or 0):
+                flags.append("orphan_parent_event_ids")
+            if int(out.get("high_severity_open_count") or 0):
+                flags.append("open_high_severity_events")
+            out["health_flags"] = flags
+        finally:
+            conn.close()
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
 def build_modules(
     registry: dict[str, Any],
     installed: dict[str, Any],
@@ -1062,16 +1131,17 @@ def build_trace_index(spark_home: Path, builder_home: Path) -> dict[str, Any]:
         "builder_events": inspect_builder_event_trace(builder_home),
         "builder_event_samples": inspect_builder_event_samples(builder_home),
         "builder_trace_groups": inspect_builder_trace_groups(builder_home),
+        "builder_trace_health": inspect_builder_trace_health(builder_home),
         "telegram_final_answer_gate": count_safe_jsonl(telegram_state / "final-answer-gate-audit.jsonl"),
         "telegram_outbound_audit": count_safe_jsonl(telegram_state / "node-outbound-audit.jsonl"),
         "spawner_mission_control_shape": inspect_json_shape(spawner_state / "mission-control.json"),
         "spawner_provider_results_shape": inspect_json_shape(spawner_state / "mission-provider-results.json"),
         "spawner_prd_auto_trace": count_safe_jsonl(spawner_state / "prd-auto-trace.jsonl"),
         "next_required_bridges": [
-            "Map Builder event ids, request ids, trace refs, and parent ids into one trace river.",
+            "Map Builder parent/child event ordering and missing-parent diagnostics into one trace river.",
             "Map Spawner mission ids to Builder mission_changed_state events.",
             "Map Telegram final-answer gate checks to final_answer_checked black-box events.",
-            "Add redacted per-trace drilldown only after owner boundaries are explicit.",
+            "Promote trace health flags into Builder AOC and cockpit repair queues.",
         ],
     }
 
@@ -1276,6 +1346,7 @@ def compile_summary(compiled: dict[str, Any], written: dict[str, str] | None = N
     builder_events = as_dict(trace_index.get("builder_events"))
     builder_event_samples = as_dict(trace_index.get("builder_event_samples"))
     builder_trace_groups = as_dict(trace_index.get("builder_trace_groups"))
+    builder_trace_health = as_dict(trace_index.get("builder_trace_health"))
     memory_status = as_dict(as_dict(memory_index.get("safe_status_export")).get("status"))
     builder_memory_tables = as_dict(memory_index.get("builder_memory_tables"))
     return {
@@ -1293,6 +1364,7 @@ def compile_summary(compiled: dict[str, Any], written: dict[str, str] | None = N
         "builder_event_rows": builder_events.get("row_count"),
         "builder_event_samples": builder_event_samples.get("sample_count"),
         "builder_trace_groups": builder_trace_groups.get("group_count"),
+        "builder_trace_health_flags": as_list(builder_trace_health.get("health_flags")),
         "memory_movement_status": memory_status.get("status"),
         "memory_movement_rows": memory_status.get("row_count"),
         "builder_memory_table_count": builder_memory_tables.get("table_count"),
