@@ -300,9 +300,16 @@ class SparkSystemMapTests(unittest.TestCase):
         self.assertEqual(index["safe_status_export"]["status"]["movement_counts"]["accepted"], 3)
         self.assertEqual(index["memory_kb_artifacts"]["lane_counts"]["current_state"]["file_count"], 1)
         self.assertGreater(index["safe_status_export"]["raw_hint_key_count"], 0)
+        self.assertEqual(index["memory_review_queue"]["schema_version"], "spark.memory_review_queue.v1")
+        self.assertGreater(index["memory_review_queue"]["counts"]["item_count"], 0)
+        self.assertTrue(
+            any(item["reason_code"] == "raw_memory_hint_keys_omitted" for item in index["memory_review_queue"]["items"])
+        )
         self.assertNotIn("My private fact", encoded)
         self.assertNotIn("telegram-token-value", encoded)
         self.assertNotIn("human-telegram-123-profile-preferred-name", encoded)
+        self.assertNotIn("raw_text", encoded)
+        self.assertNotIn("subject", index["safe_status_export"]["omitted_top_level_keys"])
 
     def test_capability_catalog_projects_labs_and_swarm_surfaces_without_bodies(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

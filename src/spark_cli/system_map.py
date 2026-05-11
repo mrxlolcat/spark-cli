@@ -19,6 +19,7 @@ CAPABILITY_CATALOG_SCHEMA = "spark.capability_catalog.compiled.v0"
 CAPABILITY_CARD_SCHEMA = "spark.capability_card.v1"
 TRACE_INDEX_SCHEMA = "spark.trace_index.compiled.v0"
 MEMORY_MOVEMENT_INDEX_SCHEMA = "spark.memory_movement_index.compiled.v0"
+MEMORY_REVIEW_QUEUE_SCHEMA = "spark.memory_review_queue.v1"
 REPO_BOARD_SCHEMA = "spark.repo_board.compiled.v0"
 VOICE_SURFACE_SCHEMA = "spark.voice_surface_view.compiled.v0"
 OPERATING_COCKPIT_SCHEMA = "spark.operating_cockpit.compiled.v0"
@@ -1068,7 +1069,9 @@ def read_memory_movement_status_export(builder_home: Path) -> dict[str, Any]:
         if key in data:
             allowed[key] = safe_memory_status_value(data[key])
     out["status"] = allowed
-    out["omitted_top_level_keys"] = sorted(str(key) for key in data.keys() if key not in SAFE_MEMORY_STATUS_KEYS)[:80]
+    out["omitted_top_level_keys"] = sorted(
+        str(key) for key in data.keys() if key not in SAFE_MEMORY_STATUS_KEYS and not key_has_raw_memory_hint(key)
+    )[:80]
     out["raw_hint_key_count"] = count_raw_memory_hint_keys(data)
     return out
 
@@ -1428,6 +1431,231 @@ def summarize_memory_run_artifacts(builder_home: Path) -> dict[str, Any]:
     except Exception as exc:
         out["error"] = f"{type(exc).__name__}: {exc}"
     return out
+
+
+def memory_review_item(
+    *,
+    item_id: str,
+    severity: str,
+    category: str,
+    owner_repo: str,
+    source_surface: str,
+    reason_code: str,
+    recommended_action: str,
+    count: int,
+    target_kind: str = "aggregate_bucket",
+    target_ref: str | None = None,
+    request_id_present: bool | None = None,
+    trace_ref_present: bool | None = None,
+    source_family: str | None = None,
+    authority: str | None = None,
+    movement_state: str | None = None,
+    memory_role: str | None = None,
+    retention_class: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "severity": severity,
+        "category": category,
+        "owner_repo": owner_repo,
+        "source_surface": source_surface,
+        "target_kind": target_kind,
+        "target_ref": target_ref,
+        "request_id_present": request_id_present,
+        "trace_ref_present": trace_ref_present,
+        "source_family": source_family,
+        "authority": authority,
+        "movement_state": movement_state,
+        "memory_role": memory_role,
+        "retention_class": retention_class,
+        "salience_score_present": None,
+        "message_preview_present": False,
+        "count": int(count or 0),
+        "reason_code": reason_code,
+        "recommended_action": recommended_action,
+        "verification_command": "spark os memory --json",
+    }
+
+
+def build_memory_review_queue(memory_index: dict[str, Any]) -> dict[str, Any]:
+    safe_status = as_dict(memory_index.get("safe_status_export"))
+    status = as_dict(safe_status.get("status"))
+    movement_counts = as_dict(status.get("movement_counts"))
+    authority_counts = as_dict(status.get("authority_counts"))
+    source_family_counts = as_dict(status.get("source_family_counts"))
+    record_counts = as_dict(status.get("record_counts"))
+    kb_artifacts = as_dict(memory_index.get("memory_kb_artifacts"))
+    kb_lanes = as_dict(kb_artifacts.get("lane_counts"))
+    current_state_lane = as_dict(kb_lanes.get("current_state"))
+    items: list[dict[str, Any]] = []
+
+    export_status = str(status.get("status") or "missing")
+    row_count = int(status.get("row_count") or 0)
+    if export_status != "supported":
+        items.append(
+            memory_review_item(
+                item_id="memory-export-not-supported",
+                severity="critical",
+                category="movement_export",
+                owner_repo="spark-intelligence-builder",
+                source_surface="Builder memory movement export",
+                reason_code="memory_movement_export_not_supported",
+                recommended_action="Restore Builder's metadata-only memory movement status export before Cockpit review.",
+                count=1,
+                target_kind="status_export",
+                target_ref="memory-movement-status",
+            )
+        )
+
+    captured_count = int(movement_counts.get("captured") or 0)
+    if captured_count:
+        items.append(
+            memory_review_item(
+                item_id="captured-memory-needs-review",
+                severity="high",
+                category="candidate_review",
+                owner_repo="spark-intelligence-builder",
+                source_surface="Builder memory movement export",
+                reason_code="captured_candidates_present",
+                recommended_action="Review captured candidates in the source memory dashboard or Builder approval inbox without exporting proposed text.",
+                count=captured_count,
+                movement_state="captured",
+                retention_class="candidate",
+            )
+        )
+
+    promoted_count = int(movement_counts.get("promoted") or 0)
+    if promoted_count:
+        items.append(
+            memory_review_item(
+                item_id="promoted-memory-audit",
+                severity="medium",
+                category="promotion_audit",
+                owner_repo="domain-chip-memory",
+                source_surface="domain-chip-memory movement contract",
+                reason_code="promoted_rows_need_periodic_audit",
+                recommended_action="Audit promoted-memory buckets against provenance, evaluation, approval, and rollback gates.",
+                count=promoted_count,
+                movement_state="promoted",
+                retention_class="durable",
+            )
+        )
+
+    supporting_count = int(authority_counts.get("supporting_not_authoritative") or 0)
+    if supporting_count:
+        items.append(
+            memory_review_item(
+                item_id="supporting-memory-boundary-review",
+                severity="medium",
+                category="authority_boundary",
+                owner_repo="domain-chip-memory",
+                source_surface="domain-chip-memory movement contract",
+                reason_code="supporting_rows_must_not_override_authoritative_memory",
+                recommended_action="Confirm supporting/advisory rows remain non-authoritative and cannot override current-state memory.",
+                count=supporting_count,
+                source_family="episodic_summary",
+                authority="supporting_not_authoritative",
+                retention_class="supporting",
+            )
+        )
+
+    current_authoritative_count = int(authority_counts.get("authoritative_current") or 0)
+    if current_authoritative_count:
+        items.append(
+            memory_review_item(
+                item_id="authoritative-current-memory-audit",
+                severity="medium",
+                category="current_state_audit",
+                owner_repo="domain-chip-memory",
+                source_surface="domain-chip-memory movement contract",
+                reason_code="authoritative_current_rows_present",
+                recommended_action="Spot-check authoritative current-state buckets for source scope, freshness, and rollback availability.",
+                count=current_authoritative_count,
+                source_family="current_state",
+                authority="authoritative_current",
+                retention_class="current_state",
+            )
+        )
+
+    current_state_file_count = int(current_state_lane.get("file_count") or 0)
+    if current_state_file_count:
+        items.append(
+            memory_review_item(
+                item_id="memory-kb-current-state-files-review",
+                severity="low",
+                category="kb_snapshot_review",
+                owner_repo="spark-memory-quality-dashboard",
+                source_surface="Spark memory KB artifacts",
+                reason_code="current_state_kb_files_present",
+                recommended_action="Use the memory dashboard source module for current-state provenance drilldown; Cockpit should keep file names and bodies hidden.",
+                count=current_state_file_count,
+                target_kind="kb_lane",
+                target_ref="current_state",
+                source_family="current_state",
+                retention_class="current_state",
+            )
+        )
+
+    raw_hint_count = int(safe_status.get("raw_hint_key_count") or 0)
+    if raw_hint_count:
+        items.append(
+            memory_review_item(
+                item_id="memory-export-redaction-review",
+                severity="high",
+                category="privacy_redaction",
+                owner_repo="spark-cli",
+                source_surface="Spark OS compiler",
+                reason_code="raw_memory_hint_keys_omitted",
+                recommended_action="Keep omitted raw-hint fields out of OS artifacts and verify no review queue item includes memory body fields.",
+                count=raw_hint_count,
+                target_kind="compiler_redaction",
+                target_ref="safe_status_export",
+            )
+        )
+
+    if row_count:
+        items.append(
+            memory_review_item(
+                item_id="memory-trace-join-not-compiled",
+                severity="high",
+                category="trace_join",
+                owner_repo="spark-intelligence-builder",
+                source_surface="Builder memory movement export",
+                reason_code="memory_rows_lack_compiled_trace_join",
+                recommended_action="Join memory movement buckets to trace ids after Builder event envelopes carry stable trace refs.",
+                count=row_count,
+                request_id_present=None,
+                trace_ref_present=None,
+                target_kind="movement_rows",
+            )
+        )
+
+    severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    items = sorted(
+        items,
+        key=lambda item: (
+            severity_rank.get(str(item.get("severity")), 9),
+            -int(item.get("count") or 0),
+            str(item.get("id")),
+        ),
+    )
+    return {
+        "schema_version": MEMORY_REVIEW_QUEUE_SCHEMA,
+        "generated_at": utc_now(),
+        "authority": "observability_non_authoritative",
+        "source": "spark.memory_movement_index.compiled.v0",
+        "redaction": "aggregate metadata only; proposed text, memory bodies, relation fields, evidence payloads, and message previews omitted",
+        "counts": {
+            "item_count": len(items),
+            "movement_row_count": row_count,
+            "movement_counts": movement_counts,
+            "authority_counts": authority_counts,
+            "source_family_counts": source_family_counts,
+            "record_counts": record_counts,
+        },
+        "items": items,
+        "non_override_rules": as_list(status.get("non_override_rules")),
+    }
 
 
 def inspect_builder_memory_tables(builder_home: Path) -> dict[str, Any]:
@@ -2610,7 +2838,7 @@ def build_trace_index(spark_home: Path, builder_home: Path) -> dict[str, Any]:
 
 
 def build_memory_movement_index(builder_home: Path) -> dict[str, Any]:
-    return {
+    memory_index = {
         "schema_version": MEMORY_MOVEMENT_INDEX_SCHEMA,
         "generated_at": utc_now(),
         "authority": "observability_non_authoritative",
@@ -2629,6 +2857,8 @@ def build_memory_movement_index(builder_home: Path) -> dict[str, Any]:
             "Promote this index into Builder AOC and cockpit as evidence only, never as instructions or profile truth.",
         ],
     }
+    memory_index["memory_review_queue"] = build_memory_review_queue(memory_index)
+    return memory_index
 
 
 def build_gaps(system_map: dict[str, Any]) -> list[dict[str, str]]:
@@ -2887,9 +3117,20 @@ def build_operating_cockpit(compiled: dict[str, Any]) -> dict[str, Any]:
                 "mode": voice_surface.get("mode"),
                 "blocker_count": len(as_list(voice_surface.get("blockers"))),
             },
+            "memory_review_queue": {
+                "schema_version": as_dict(as_dict(compiled.get("memory_movement_index")).get("memory_review_queue")).get(
+                    "schema_version"
+                ),
+                "item_count": as_dict(
+                    as_dict(as_dict(compiled.get("memory_movement_index")).get("memory_review_queue")).get("counts")
+                ).get("item_count"),
+            },
         },
         "action_boundary": "Read-only until high-agency actions carry AuthorityVerdictV1 trace evidence.",
         "trace_repair_queue": as_list(trace_index.get("trace_repair_queue"))[:5],
+        "memory_review_queue": as_list(
+            as_dict(as_dict(compiled.get("memory_movement_index")).get("memory_review_queue")).get("items")
+        )[:5],
         "top_blockers": as_list(system_map.get("gaps"))[:10],
     }
 

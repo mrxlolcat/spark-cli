@@ -5708,6 +5708,8 @@ def cmd_os_memory(args: argparse.Namespace) -> int:
     status = _safe_mapping(safe_status.get("status"))
     kb_artifacts = _safe_mapping(memory_index.get("memory_kb_artifacts"))
     current_state = _safe_mapping(_safe_mapping(kb_artifacts.get("lane_counts")).get("current_state"))
+    memory_review_queue = _safe_mapping(memory_index.get("memory_review_queue"))
+    memory_review_items = _safe_list(memory_review_queue.get("items"))
     payload = {
         "schema_version": "spark.os_memory.summary.v0",
         "generated_at": memory_index.get("generated_at"),
@@ -5720,6 +5722,8 @@ def cmd_os_memory(args: argparse.Namespace) -> int:
         "record_counts": _safe_mapping(status.get("record_counts")),
         "kb_file_count": _safe_int(kb_artifacts.get("file_count")),
         "current_state_file_count": _safe_int(current_state.get("file_count")),
+        "memory_review_queue": memory_review_queue,
+        "next_memory_review": memory_review_items[0] if memory_review_items else None,
         "memory_movement_index": memory_index,
         "redaction": memory_index.get("redaction"),
     }
@@ -5734,6 +5738,13 @@ def cmd_os_memory(args: argparse.Namespace) -> int:
     print(f"- authority: {payload['authority_counts']}")
     print(f"- records: {payload['record_counts']}")
     print(f"- KB files: {payload['kb_file_count']}")
+    next_review = _safe_mapping(payload.get("next_memory_review"))
+    if next_review:
+        print(
+            "- next review: "
+            f"{next_review.get('owner_repo')} / {next_review.get('category')} "
+            f"({next_review.get('reason_code')})"
+        )
     print("Redaction: aggregate memory metadata only; raw memory text and row bodies are omitted.")
     return 0
 
