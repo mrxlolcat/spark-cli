@@ -1280,6 +1280,32 @@ def capability_card_status_from_specialization(surface: dict[str, Any]) -> str:
     return "seen"
 
 
+def capability_proof_state(status: str) -> str:
+    if status == "schema-shaped":
+        return "schema_only"
+    if status == "local-artifacts":
+        return "artifact_present_unverified"
+    return "proof_incomplete"
+
+
+def capability_trust_fields(
+    *,
+    status: str,
+    compiled_proofs: dict[str, Any],
+    trust_basis: list[str],
+    missing_proofs: list[str],
+) -> dict[str, Any]:
+    return {
+        "trust_status": "untrusted",
+        "proof_state": capability_proof_state(status),
+        "trust_scope": "none",
+        "trust_basis": trust_basis,
+        "compiled_proofs": compiled_proofs,
+        "missing_proofs": missing_proofs,
+        "trust_rule": "Schema, manifest, conformance, or local artifact presence never makes a capability trusted.",
+    }
+
+
 def build_capability_cards(
     creator_system_surfaces: list[dict[str, Any]],
     specialization_path_surfaces: list[dict[str, Any]],
@@ -1292,6 +1318,42 @@ def build_capability_cards(
         artifacts = as_dict(surface.get("creator_run_artifacts"))
         review_sources = as_dict(surface.get("review_and_release_sources"))
         artifact_counts = as_dict(artifacts.get("artifact_presence_counts"))
+        status = capability_card_status_from_labs(surface)
+        creator_run_count = int(artifacts.get("run_count") or 0)
+        schema_count = int(schema_inventory.get("schema_count") or 0)
+        benchmark_manifest_count = int(artifact_counts.get("benchmark_manifest") or 0)
+        review_source_count = bool_count(review_sources)
+        trust = capability_trust_fields(
+            status=status,
+            compiled_proofs={
+                "schema_present": schema_count > 0,
+                "local_artifacts_present": creator_run_count > 0,
+                "benchmark_manifest_present": benchmark_manifest_count > 0,
+                "review_sources_present": review_source_count > 0,
+                "trace_refs_present": False,
+                "rollback_refs_present": False,
+                "privacy_review_verdict_present": False,
+                "publication_approval_present": False,
+            },
+            trust_basis=[
+                basis
+                for basis, present in (
+                    ("schema_present", schema_count > 0),
+                    ("local_artifacts_present", creator_run_count > 0),
+                    ("benchmark_manifest_present", benchmark_manifest_count > 0),
+                    ("review_source_present", review_source_count > 0),
+                )
+                if present
+            ],
+            missing_proofs=[
+                "normalized_gate_verdict",
+                "benchmark_pass_fail_verdict",
+                "privacy_review_verdict",
+                "rollback_ref",
+                "authority_scope_verdict",
+                "publication_approval",
+            ],
+        )
         cards.append(
             {
                 "schema_version": CAPABILITY_CARD_SCHEMA,
@@ -1299,19 +1361,20 @@ def build_capability_cards(
                 "name": f"{repo} creator system",
                 "owner_repo": repo,
                 "surface_type": "creator-system",
-                "status": capability_card_status_from_labs(surface),
+                "status": status,
+                **trust,
                 "requested_authority": ["local_files_read", "review_only"],
                 "memory_policy": "non_authoritative_evidence_only",
                 "evidence_summary": {
-                    "schema_count": int(schema_inventory.get("schema_count") or 0),
-                    "creator_run_count": int(artifacts.get("run_count") or 0),
+                    "schema_count": schema_count,
+                    "creator_run_count": creator_run_count,
                     "artifact_presence_counts": artifact_counts,
                 },
                 "benchmark_summary": {
-                    "benchmark_manifest_count": int(artifact_counts.get("benchmark_manifest") or 0),
+                    "benchmark_manifest_count": benchmark_manifest_count,
                 },
                 "review_summary": {
-                    "review_source_count": bool_count(review_sources),
+                    "review_source_count": review_source_count,
                     "review_sources": {
                         key: bool(as_dict(value).get("exists")) for key, value in sorted(review_sources.items())
                     },
@@ -1335,6 +1398,50 @@ def build_capability_cards(
         schema_inventory = as_dict(surface.get("schema_inventory"))
         artifacts = as_dict(surface.get("collective_artifacts"))
         governance_sources = as_dict(surface.get("publication_governance_sources"))
+        status = capability_card_status_from_specialization(surface)
+        configured_path_count = int(config.get("path_count") or 0)
+        schema_count = int(schema_inventory.get("schema_count") or 0)
+        promotion_packet_count = int(artifacts.get("promotion_packet_count") or 0)
+        evidence_ledger_count = int(artifacts.get("evidence_ledger_count") or 0)
+        benchmark_adapter_counts = as_dict(config.get("benchmark_adapter_counts"))
+        rollback_policy_counts = as_dict(config.get("rollback_policy_counts"))
+        governance_source_count = bool_count(governance_sources)
+        trust = capability_trust_fields(
+            status=status,
+            compiled_proofs={
+                "schema_present": schema_count > 0,
+                "configured_paths_present": configured_path_count > 0,
+                "promotion_packets_present": promotion_packet_count > 0,
+                "evidence_ledgers_present": evidence_ledger_count > 0,
+                "benchmark_adapter_config_present": bool(benchmark_adapter_counts),
+                "rollback_policy_config_present": bool(rollback_policy_counts),
+                "publication_governance_sources_present": governance_source_count > 0,
+                "trace_refs_present": False,
+                "rollback_refs_present": False,
+                "publication_approval_present": False,
+            },
+            trust_basis=[
+                basis
+                for basis, present in (
+                    ("schema_present", schema_count > 0),
+                    ("configured_paths_present", configured_path_count > 0),
+                    ("promotion_packets_present", promotion_packet_count > 0),
+                    ("evidence_ledgers_present", evidence_ledger_count > 0),
+                    ("benchmark_adapter_config_present", bool(benchmark_adapter_counts)),
+                    ("rollback_policy_config_present", bool(rollback_policy_counts)),
+                    ("publication_governance_source_present", governance_source_count > 0),
+                )
+                if present
+            ],
+            missing_proofs=[
+                "benchmark_pass_fail_verdict",
+                "publication_approval_verdict",
+                "privacy_review_verdict",
+                "rollback_ref",
+                "authority_scope_verdict",
+                "trace_or_proof_ref",
+            ],
+        )
         cards.append(
             {
                 "schema_version": CAPABILITY_CARD_SCHEMA,
@@ -1342,23 +1449,24 @@ def build_capability_cards(
                 "name": f"{repo} specialization path",
                 "owner_repo": repo,
                 "surface_type": "specialization-path",
-                "status": capability_card_status_from_specialization(surface),
+                "status": status,
+                **trust,
                 "requested_authority": ["local_files_read", "review_only"],
                 "memory_policy": "selective_or_surface_defined",
                 "evidence_summary": {
-                    "configured_path_count": int(config.get("path_count") or 0),
-                    "schema_count": int(schema_inventory.get("schema_count") or 0),
-                    "promotion_packet_count": int(artifacts.get("promotion_packet_count") or 0),
-                    "evidence_ledger_count": int(artifacts.get("evidence_ledger_count") or 0),
+                    "configured_path_count": configured_path_count,
+                    "schema_count": schema_count,
+                    "promotion_packet_count": promotion_packet_count,
+                    "evidence_ledger_count": evidence_ledger_count,
                 },
                 "benchmark_summary": {
                     "loop_kind_counts": as_dict(config.get("loop_kind_counts")),
-                    "benchmark_adapter_counts": as_dict(config.get("benchmark_adapter_counts")),
+                    "benchmark_adapter_counts": benchmark_adapter_counts,
                     "evolution_mode_counts": as_dict(config.get("evolution_mode_counts")),
-                    "rollback_policy_counts": as_dict(config.get("rollback_policy_counts")),
+                    "rollback_policy_counts": rollback_policy_counts,
                 },
                 "review_summary": {
-                    "publication_governance_source_count": bool_count(governance_sources),
+                    "publication_governance_source_count": governance_source_count,
                     "publication_governance_sources": {
                         key: bool(as_dict(value).get("exists")) for key, value in sorted(governance_sources.items())
                     },

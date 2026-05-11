@@ -5524,13 +5524,19 @@ def cmd_os_capabilities(args: argparse.Namespace) -> int:
     cards = catalog.get("capability_cards") if isinstance(catalog.get("capability_cards"), list) else []
     status_counts: dict[str, int] = {}
     surface_counts: dict[str, int] = {}
+    proof_state_counts: dict[str, int] = {}
+    trust_status_counts: dict[str, int] = {}
     for card in cards:
         if not isinstance(card, dict):
             continue
         status = str(card.get("status") or "unknown")
         surface = str(card.get("surface_type") or "unknown")
+        proof_state = str(card.get("proof_state") or "unknown")
+        trust_status = str(card.get("trust_status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
         surface_counts[surface] = surface_counts.get(surface, 0) + 1
+        proof_state_counts[proof_state] = proof_state_counts.get(proof_state, 0) + 1
+        trust_status_counts[trust_status] = trust_status_counts.get(trust_status, 0) + 1
 
     payload = {
         "schema_version": "spark.os_capabilities.summary.v0",
@@ -5538,6 +5544,8 @@ def cmd_os_capabilities(args: argparse.Namespace) -> int:
         "card_count": len(cards),
         "status_counts": dict(sorted(status_counts.items())),
         "surface_counts": dict(sorted(surface_counts.items())),
+        "proof_state_counts": dict(sorted(proof_state_counts.items())),
+        "trust_status_counts": dict(sorted(trust_status_counts.items())),
         "cards": cards,
         "redaction": "Capability cards are compiled from metadata only; commands, packet bodies, logs, and raw evidence are omitted.",
     }
@@ -5551,6 +5559,10 @@ def cmd_os_capabilities(args: argparse.Namespace) -> int:
         print(f"- {surface}: {count}")
     for status, count in payload["status_counts"].items():
         print(f"- {status}: {count}")
+    for proof_state, count in payload["proof_state_counts"].items():
+        print(f"- proof {proof_state}: {count}")
+    for trust_status, count in payload["trust_status_counts"].items():
+        print(f"- trust {trust_status}: {count}")
     print("Redaction: commands, packet bodies, logs, and raw evidence are omitted.")
     return 0
 
