@@ -3344,6 +3344,34 @@ BUILDER_AOC_COMMAND_MARKERS = {
 }
 
 
+def dirty_family_for_path(path_value: str) -> str:
+    normalized = path_value.replace("\\", "/").strip()
+    if " -> " in normalized:
+        normalized = normalized.split(" -> ", 1)[1].strip()
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return "unknown"
+    if parts[0] == "src" and len(parts) >= 2:
+        return "src/" + parts[1]
+    if parts[0] in {"docs", "tests", "ops", "artifacts", "scripts", ".github"}:
+        return parts[0]
+    return "root"
+
+
+def git_dirty_family_counts(path: Path) -> dict[str, int]:
+    if not (path / ".git").exists():
+        return {}
+    code, status = run_git(path, ["status", "--porcelain"])
+    if code != 0 or not status:
+        return {}
+    counts: Counter[str] = Counter()
+    for line in status.splitlines():
+        if not line.strip():
+            continue
+        counts[dirty_family_for_path(line[3:])] += 1
+    return dict(sorted(counts.items()))
+
+
 def builder_source_audit(path: Path) -> dict[str, Any]:
     git = git_board_status(path)
     cli_path = path / "src" / "spark_intelligence" / "cli.py"
@@ -3367,6 +3395,7 @@ def builder_source_audit(path: Path) -> dict[str, Any]:
         "behind": git.get("behind"),
         "dirty_tracked_count": git.get("dirty_tracked_count"),
         "untracked_count": git.get("untracked_count"),
+        "dirty_family_counts": git_dirty_family_counts(path),
         "last_commit": git.get("last_commit"),
         "cli_path_exists": cli_path.exists(),
         "aoc_command_markers": command_markers,

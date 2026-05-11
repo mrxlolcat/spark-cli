@@ -21,6 +21,7 @@ from spark_cli.system_map import (
     collect_repo_metadata,
     compile_system_map,
     count_safe_jsonl,
+    dirty_family_for_path,
     inspect_builder_event_samples,
     inspect_builder_trace_health,
     inspect_builder_trace_groups,
@@ -35,6 +36,11 @@ from spark_cli.system_map import (
 
 
 class SparkSystemMapTests(unittest.TestCase):
+    def test_dirty_family_for_path_coarsens_private_artifact_names(self) -> None:
+        self.assertEqual(dirty_family_for_path("src/spark_intelligence/memory/orchestrator.py"), "src/spark_intelligence")
+        self.assertEqual(dirty_family_for_path("artifacts/telegram-updates/private-row.json"), "artifacts")
+        self.assertEqual(dirty_family_for_path("old.py -> docs/plan.md"), "docs")
+
     def test_setup_summary_redacts_secret_names_and_profile_details(self) -> None:
         summary = summarize_setup(
             {
