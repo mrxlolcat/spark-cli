@@ -232,7 +232,9 @@ class SparkSystemMapTests(unittest.TestCase):
             spawner_helper = spawner_source / "src" / "lib" / "server" / "spawner-state.ts"
             spawner_helper.parent.mkdir(parents=True)
             spawner_helper.write_text(
-                "export const state = process.env.SPAWNER_STATE_DIR || path.resolve(process.cwd(), '.spawner');",
+                "export const state = process.env.SPAWNER_STATE_DIR || "
+                "path.resolve(process.env.SPARK_HOME, 'state', 'spawner-ui') || "
+                "path.resolve(process.cwd(), '.spawner');",
                 encoding="utf-8",
             )
             registry.write_text(
@@ -303,7 +305,9 @@ class SparkSystemMapTests(unittest.TestCase):
         self.assertTrue(spawner_item["evidence_details"]["module_local_state_exists"])
         self.assertTrue(spawner_item["evidence_details"]["state_root_audit_route_exists"])
         self.assertTrue(spawner_item["evidence_details"]["configured_state_env_supported"])
+        self.assertTrue(spawner_item["evidence_details"]["spark_home_state_fallback_present"])
         self.assertTrue(spawner_item["evidence_details"]["cwd_spawner_fallback_present"])
+        self.assertTrue(spawner_item["evidence_details"]["cwd_spawner_fallback_gated_by_spark_home"])
         self.assertEqual(spawner_item["evidence_details"]["reference_family_counts"]["src"], 1)
         self.assertIn("source metadata only", spawner_item["evidence_details"]["redaction"])
         self.assertIn("/api/system/state-root", spawner_item["verification_command"])

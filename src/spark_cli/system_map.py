@@ -3745,6 +3745,12 @@ def spawner_state_source_audit(path: Path) -> dict[str, Any]:
             helper_text = ""
 
     audit_route = path / "src" / "routes" / "api" / "system" / "state-root" / "+server.ts"
+    spark_home_state_fallback_present = (
+        "SPARK_HOME" in helper_text
+        and "state" in helper_text
+        and "spawner-ui" in helper_text
+    )
+    cwd_spawner_fallback_present = "'.spawner'" in helper_text or '".spawner"' in helper_text
     return {
         "path": str(path),
         "exists": path.exists(),
@@ -3752,7 +3758,9 @@ def spawner_state_source_audit(path: Path) -> dict[str, Any]:
         "state_root_audit_route_exists": audit_route.exists(),
         "state_helper_exists": state_helper.exists(),
         "configured_state_env_supported": "SPAWNER_STATE_DIR" in helper_text,
-        "cwd_spawner_fallback_present": "'.spawner'" in helper_text or '".spawner"' in helper_text,
+        "spark_home_state_fallback_present": spark_home_state_fallback_present,
+        "cwd_spawner_fallback_present": cwd_spawner_fallback_present,
+        "cwd_spawner_fallback_gated_by_spark_home": cwd_spawner_fallback_present and spark_home_state_fallback_present,
         "reference_file_count": file_count,
         "reference_family_counts": dict(sorted(family_counts.items())),
         "redaction": "source metadata only; no mission files, provider results, prompts, or state row contents read",
@@ -3838,11 +3846,12 @@ def build_duplicate_truths(system_map: dict[str, Any]) -> dict[str, Any]:
             if spawner_state_audit_route.exists()
             else " State-root audit route is not present yet."
         )
-        fallback_evidence = (
-            " Source still contains a cwd .spawner fallback."
-            if spawner_audit.get("cwd_spawner_fallback_present")
-            else " No cwd .spawner fallback was detected in the state helper."
-        )
+        if spawner_audit.get("cwd_spawner_fallback_gated_by_spark_home"):
+            fallback_evidence = " Source still contains a cwd .spawner fallback, gated behind SPARK_HOME state fallback."
+        elif spawner_audit.get("cwd_spawner_fallback_present"):
+            fallback_evidence = " Source still contains a cwd .spawner fallback."
+        else:
+            fallback_evidence = " No cwd .spawner fallback was detected in the state helper."
         items.append(
             duplicate_truth_item(
                 item_id="spawner-module-local-state-root",
