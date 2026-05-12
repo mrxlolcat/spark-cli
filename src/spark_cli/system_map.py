@@ -2960,6 +2960,11 @@ def inspect_builder_trace_health(builder_home: Path) -> dict[str, Any]:
                 return out
             out["table_exists"] = True
             columns = [row[1] for row in conn.execute("pragma table_info(builder_events)")]
+            group_columns = [
+                column
+                for column in ("component", "event_type", "status", "severity", "target_surface", "evidence_lane")
+                if column in columns
+            ]
             total = int(conn.execute("select count(*) from builder_events").fetchone()[0])
             out["row_count"] = total
             for column in ("trace_ref", "request_id", "parent_event_id"):
@@ -2975,11 +2980,6 @@ def inspect_builder_trace_health(builder_home: Path) -> dict[str, Any]:
                 out["trace_group_count"] = int(trace_group_count)
                 if "created_at" in columns:
                     out["recent_windows"] = _builder_trace_recent_windows(conn)
-                group_columns = [
-                    column
-                    for column in ("component", "event_type", "status", "severity", "target_surface", "evidence_lane")
-                    if column in columns
-                ]
                 if group_columns:
                     expressions = [
                         f"coalesce(nullif(trim(\"{column}\"), ''), '[missing]') as \"{column}\""
@@ -3017,6 +3017,35 @@ def inspect_builder_trace_health(builder_home: Path) -> dict[str, Any]:
                     """
                 ).fetchone()[0]
                 out["high_severity_open_count"] = int(high_open)
+                if group_columns:
+                    expressions = [
+                        f"coalesce(nullif(trim(\"{column}\"), ''), '[missing]') as \"{column}\""
+                        for column in group_columns
+                    ]
+                    group_by = ", ".join(f'"{column}"' for column in group_columns)
+                    rows = conn.execute(
+                        f"""
+                        select {", ".join(expressions)}, count(*) as event_count
+                        from builder_events
+                        where lower(coalesce(severity, '')) in ('high', 'critical')
+                          and lower(coalesce(status, '')) in ('open', 'failed', 'error', 'blocked')
+                        group by {group_by}
+                        order by event_count desc
+                        limit 30
+                        """
+                    ).fetchall()
+                    out["high_severity_open_sources"] = {
+                        "group_by": group_columns,
+                        "limit": 30,
+                        "redaction": "aggregate high-severity counts grouped by allowlisted event metadata only",
+                        "rows": [
+                            {
+                                **{column: str(row[index] or "[missing]") for index, column in enumerate(group_columns)},
+                                "event_count": int(row[len(group_columns)] or 0),
+                            }
+                            for row in rows
+                        ],
+                    }
             if {"event_id", "parent_event_id"}.issubset(columns):
                 orphaned = conn.execute(
                     """
@@ -3837,6 +3866,103 @@ def build_trace_repair_queue(trace_index: dict[str, Any]) -> list[dict[str, Any]
     )
 
 
+def build_builder_trace_repair_cards(trace_index: dict[str, Any]) -> dict[str, Any]:
+    trace_health = as_dict(trace_index.get("builder_trace_health"))
+    current_health = as_dict(trace_index.get("trace_current_health")) or build_trace_current_health(trace_index)
+    repair_queue = [as_dict(item) for item in as_list(trace_index.get("trace_repair_queue"))]
+    cards: list[dict[str, Any]] = []
+
+    for item in repair_queue:
+        if item.get("owner_repo") != "spark-intelligence-builder" or item.get("missing_field") != "trace_ref":
+            continue
+        component = str(item.get("event_producer_family") or "builder_events")
+        event_type = str(item.get("event_type") or "unknown")
+        cards.append(
+            {
+                "schema_version": "spark.builder_trace_repair_card.v0",
+                "id": item.get("id") or trace_repair_id("builder", component, event_type, "missing-trace-ref"),
+                "category": "missing_trace_ref",
+                "title": f"Thread trace_ref into {component} / {event_type}",
+                "status": (
+                    "current"
+                    if current_health.get("repair_scope") == "current"
+                    else "historical_backlog"
+                    if current_health.get("repair_scope") == "historical_backlog"
+                    else "unknown"
+                ),
+                "priority": item.get("priority") or "high",
+                "owner_repo": "spark-intelligence-builder",
+                "source_module": item.get("source_module") or f"{component} event emission",
+                "event_producer_family": component,
+                "event_type": event_type,
+                "missing_field": "trace_ref",
+                "observed_event_count": int(item.get("observed_event_count") or 0),
+                "current_window": current_health.get("window"),
+                "current_window_row_count": int(current_health.get("row_count") or 0),
+                "current_window_missing_trace_ref_count": int(current_health.get("missing_trace_ref_count") or 0),
+                "total_missing_trace_ref_count": int(current_health.get("total_missing_trace_ref_count") or 0),
+                "evidence": item.get("rank_reason") or "Builder event producer bucket is missing trace_ref.",
+                "recommended_action": item.get("safe_fix")
+                or "Thread active request_id and trace_ref into the event producer before recording Builder events.",
+                "verification_command": item.get("verification_command") or "spark os trace --json",
+                "data_boundary": "aggregate metadata only; no event bodies, raw prompts, provider output, memory bodies, transcripts, audio, chat ids, or secrets",
+            }
+        )
+        if len(cards) >= 6:
+            break
+
+    high_rows = [as_dict(row) for row in as_list(as_dict(trace_health.get("high_severity_open_sources")).get("rows"))]
+    for row in high_rows[:4]:
+        component = str(row.get("component") or "builder_events")
+        event_type = str(row.get("event_type") or "unknown")
+        status = str(row.get("status") or "open")
+        severity = str(row.get("severity") or "high")
+        owner = trace_repair_owner(component)
+        cards.append(
+            {
+                "schema_version": "spark.builder_trace_repair_card.v0",
+                "id": trace_repair_id("builder", component, event_type, status, severity, "open-high-severity"),
+                "category": "open_high_severity_event",
+                "title": f"Resolve high-severity {component} / {event_type}",
+                "status": "open",
+                "priority": "critical" if severity == "critical" else "high",
+                "owner_repo": owner.get("owner_repo") or "spark-intelligence-builder",
+                "source_module": owner.get("source_module") or f"{component} event lifecycle",
+                "event_producer_family": component,
+                "event_type": event_type,
+                "event_status": status,
+                "event_severity": severity,
+                "missing_field": "resolution_or_close_event",
+                "observed_event_count": int(row.get("event_count") or 0),
+                "current_window": current_health.get("window"),
+                "evidence": "high or critical Builder events remain open in aggregate black-box metadata",
+                "recommended_action": (
+                    "Confirm whether the guardrail is still active, then add source-owned close/resolution metadata."
+                ),
+                "verification_command": "spark os trace --json",
+                "data_boundary": "aggregate metadata only; no event bodies, raw prompts, provider output, memory bodies, transcripts, audio, chat ids, or secrets",
+            }
+        )
+
+    category_counts: dict[str, int] = {}
+    owner_counts: dict[str, int] = {}
+    for card in cards:
+        category = str(card.get("category") or "unknown")
+        owner_repo = str(card.get("owner_repo") or "unknown")
+        category_counts[category] = category_counts.get(category, 0) + 1
+        owner_counts[owner_repo] = owner_counts.get(owner_repo, 0) + 1
+
+    return {
+        "schema_version": "spark.builder_trace_repair_cards.v0",
+        "card_count": len(cards),
+        "category_counts": category_counts,
+        "owner_counts": owner_counts,
+        "current_health": current_health,
+        "redaction": "repair cards are derived from aggregate Builder event metadata only",
+        "items": cards,
+    }
+
+
 def build_trace_index(spark_home: Path, builder_home: Path) -> dict[str, Any]:
     spawner_state = spark_home / "state" / "spawner-ui"
     telegram_state = spark_home / "state" / "spark-telegram-bot"
@@ -3876,6 +4002,7 @@ def build_trace_index(spark_home: Path, builder_home: Path) -> dict[str, Any]:
     }
     trace_index["trace_current_health"] = build_trace_current_health(trace_index)
     trace_index["trace_repair_queue"] = build_trace_repair_queue(trace_index)
+    trace_index["builder_trace_repair_cards"] = build_builder_trace_repair_cards(trace_index)
     return trace_index
 
 
@@ -4871,6 +4998,9 @@ def build_operating_cockpit(compiled: dict[str, Any]) -> dict[str, Any]:
                 "schema_version": trace_index.get("schema_version"),
                 "builder_event_count": as_dict(trace_index.get("builder_events")).get("row_count"),
                 "trace_repair_candidate_count": len(as_list(trace_index.get("trace_repair_queue"))),
+                "builder_trace_repair_card_count": as_dict(trace_index.get("builder_trace_repair_cards")).get(
+                    "card_count"
+                ),
                 "authority_verdict_count": as_dict(trace_index.get("authority_verdicts")).get("verdict_count"),
                 "review_candidate_count": as_dict(as_dict(trace_index.get("review_candidates")).get("counts")).get(
                     "candidate_count"
@@ -4897,6 +5027,7 @@ def build_operating_cockpit(compiled: dict[str, Any]) -> dict[str, Any]:
         },
         "action_boundary": "Read-only until high-agency actions carry AuthorityVerdictV1 trace evidence.",
         "trace_repair_queue": as_list(trace_index.get("trace_repair_queue"))[:5],
+        "builder_trace_repair_cards": as_list(as_dict(trace_index.get("builder_trace_repair_cards")).get("items"))[:6],
         "review_candidates": as_list(as_dict(trace_index.get("review_candidates")).get("items"))[:5],
         "duplicate_truths": {
             "schema_version": duplicate_truths.get("schema_version"),

@@ -17,6 +17,7 @@ from spark_cli.system_map import (
     build_memory_movement_index,
     build_duplicate_truths,
     build_repo_board,
+    build_builder_trace_repair_cards,
     build_trace_current_health,
     build_trace_repair_queue,
     build_spark_os_review_candidates,
@@ -566,6 +567,58 @@ class SparkSystemMapTests(unittest.TestCase):
         self.assertEqual(queue[0]["temporal_scope"], "historical_backlog")
         self.assertEqual(queue[0]["current_window_missing_trace_ref_count"], 0)
         self.assertIn("historical", queue[0]["rank_reason"])
+
+    def test_builder_trace_repair_cards_are_source_owned_and_metadata_only(self) -> None:
+        trace_index = {
+            "builder_trace_health": {
+                "missing_trace_ref_count": 12,
+                "high_severity_open_count": 2,
+                "recent_windows": [
+                    {"window": "24h", "row_count": 3, "missing_trace_ref_count": 1, "missing_trace_ref_ratio": 0.3333},
+                ],
+                "high_severity_open_sources": {
+                    "rows": [
+                        {
+                            "component": "stop_ship_checks",
+                            "event_type": "contradiction_recorded",
+                            "status": "open",
+                            "severity": "high",
+                            "target_surface": "spark_intelligence_builder",
+                            "evidence_lane": "realworld_validated",
+                            "event_count": 2,
+                            "summary": "private contradiction summary",
+                        }
+                    ]
+                },
+                "missing_trace_ref_sources": {
+                    "rows": [
+                        {
+                            "component": "memory_orchestrator",
+                            "event_type": "memory_read_requested",
+                            "status": "recorded",
+                            "severity": "medium",
+                            "target_surface": "spark_intelligence_builder",
+                            "evidence_lane": "realworld_validated",
+                            "event_count": 12,
+                            "facts_json": "private memory body",
+                        }
+                    ]
+                },
+            }
+        }
+        trace_index["trace_current_health"] = build_trace_current_health(trace_index)
+        trace_index["trace_repair_queue"] = build_trace_repair_queue(trace_index)
+        cards = build_builder_trace_repair_cards(trace_index)
+        encoded = json.dumps(cards)
+
+        self.assertEqual(cards["schema_version"], "spark.builder_trace_repair_cards.v0")
+        self.assertGreaterEqual(cards["card_count"], 2)
+        self.assertEqual(cards["items"][0]["owner_repo"], "spark-intelligence-builder")
+        self.assertEqual(cards["items"][0]["missing_field"], "trace_ref")
+        self.assertEqual(cards["items"][1]["missing_field"], "resolution_or_close_event")
+        self.assertIn("missing_trace_ref", cards["category_counts"])
+        self.assertNotIn("private contradiction summary", encoded)
+        self.assertNotIn("private memory body", encoded)
 
     def test_cross_system_trace_samples_keep_join_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1481,6 +1534,8 @@ const REQUIRED_PUBLICATION_CHECKS = ["spark-insight-schema", "spark-insight-secr
         self.assertEqual(health["high_severity_open_count"], 1)
         self.assertEqual(health["orphan_parent_event_sources"]["rows"][0]["component"], "router")
         self.assertEqual(health["orphan_parent_event_sources"]["rows"][0]["event_count"], 1)
+        self.assertEqual(health["high_severity_open_sources"]["rows"][0]["component"], "answer")
+        self.assertEqual(health["high_severity_open_sources"]["rows"][0]["event_count"], 1)
         self.assertEqual(health["missing_trace_ref_sources"]["rows"][0]["component"], "answer")
         self.assertEqual(health["missing_trace_ref_sources"]["rows"][0]["event_count"], 1)
         self.assertEqual(health["recent_windows"][0]["row_count"], 4)
