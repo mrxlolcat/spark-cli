@@ -1,0 +1,54 @@
+[module]
+name = "spark-cli"
+version = "0.1.0"
+kind = "runtime"
+plane = "operator"
+description = "Local Spark installer, operator CLI, and read-only Spark OS compiler."
+homepage = "https://github.com/vibeforge1111/spark-cli"
+license = "MIT"
+
+[runtime]
+kind = "python"
+version = ">=3.11,<3.14"
+package_manager = "pip"
+
+[install.dev]
+commands = ["python -m pip install -e ."]
+
+[provides]
+capabilities = [
+  "spark.install",
+  "spark.status",
+  "spark.verify",
+  "spark.os.compile",
+]
+
+[needs]
+modules = []
+capabilities = []
+secrets = []
+
+[claims]
+secrets = []
+ports = []
+routes = []
+
+[healthcheck]
+command = "python -m spark_cli.cli status --json"
+timeout_seconds = 60
+success_hint = "Spark CLI operator runtime is importable and can inspect local module health."
+failure_hint = "Run `python -m spark_cli.cli status --json` from the spark-cli repo for detail."
+
+[profiles.telegram_starter]
+role = "operator-cli-and-system-map-owner"
+owns = [
+  "spark.install",
+  "spark.status",
+  "spark.verify",
+  "spark.os.compile",
+]
+does_not_own = [
+  "telegram.ingress",
+  "mission.execution",
+  "durable.memory",
+]
