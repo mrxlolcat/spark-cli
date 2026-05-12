@@ -36,6 +36,7 @@ from spark_cli.cli import (
     collect_registry_pin_drift_payload,
     collect_sandbox_verify_payload,
     collect_setup_configuration,
+    collect_simple_fix_payload,
     collect_status_payload,
     collect_hosted_security_payload,
     collect_llm_doctor_context,
@@ -8581,6 +8582,35 @@ class SparkCliTests(unittest.TestCase):
         self.assertIn("spark verify --onboarding", payload["next_commands"])
         self.assertIn("spark verify --deep", payload["next_commands"])
         self.assertIn("spark restart telegram-starter", payload["next_commands"])
+        route_context = payload["route_context"]
+        self.assertEqual(route_context["schema_version"], "spark.repair_route_context.v1")
+        self.assertEqual(route_context["candidate_route"], "spark.repair")
+        self.assertEqual(route_context["authority_verdict"]["source_owner"], "spark-cli")
+        self.assertEqual(route_context["repair_target"], "telegram_runtime")
+        self.assertEqual(route_context["health_evidence"], "fresh_degraded")
+        self.assertEqual(route_context["data_boundary"]["exports_secret"], False)
+        self.assertNotIn("BOT_TOKEN", json.dumps(route_context))
+
+    def test_collect_simple_fix_payload_exports_builder_route_context(self) -> None:
+        status_payload = {
+            "ok": False,
+            "modules": [
+                {"name": "spawner-ui", "healthy": False, "detail": "ECONNREFUSED"},
+            ],
+        }
+        provider_payload = {"ok": True, "summary": "provider roles ready"}
+        with patch("spark_cli.cli.collect_status_payload", return_value=status_payload), \
+             patch("spark_cli.cli.provider_status_payload", return_value=provider_payload):
+            payload = collect_simple_fix_payload("spawner")
+
+        route_context = payload["route_context"]
+        self.assertEqual(route_context["schema_version"], "spark.repair_route_context.v1")
+        self.assertEqual(route_context["candidate_route"], "spark.repair")
+        self.assertEqual(route_context["repair_target"], "spawner_ui")
+        self.assertEqual(route_context["repair_scope"], "local_spawner_repair_guidance")
+        self.assertEqual(route_context["health_evidence"], "fresh_degraded")
+        self.assertEqual(route_context["authority_verdict"]["decision"], "not_required")
+        self.assertEqual(route_context["data_boundary"]["exports_raw_prompt"], False)
 
     def test_doctor_prints_plain_first_user_summary(self) -> None:
         status_payload = {
