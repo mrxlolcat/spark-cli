@@ -26,7 +26,7 @@
     },
     "spark-telegram-bot": {
       "source": "https://github.com/vibeforge1111/spark-telegram-bot",
-      "commit": "51cac9098746ec34fb17163c2db1e3947a273dc1",
+      "commit": "f2f8859a02a0d3a719db38dd2b0c17e3de5b5dd8",
       "verify_ref": "refs/heads/release/stability-2026-05-09",
       "require_signed_commit": false,
       "blessed": true,
@@ -34,19 +34,19 @@
       "attestation": {
         "type": "git-commit-pin-v1",
         "source": "https://github.com/vibeforge1111/spark-telegram-bot",
-        "commit": "51cac9098746ec34fb17163c2db1e3947a273dc1"
+        "commit": "f2f8859a02a0d3a719db38dd2b0c17e3de5b5dd8"
       }
     },
     "spark-intelligence-builder": {
       "source": "https://github.com/vibeforge1111/spark-intelligence-builder",
-      "commit": "b0f5b49d2de130b2147a3c0f76990ca1714ef0c2",
+      "commit": "53411fa9580c3444260f841b0046e274f0aba9b1",
       "require_signed_commit": false,
       "blessed": true,
       "summary": "Spark runtime core for identity, memory, and routing",
       "attestation": {
         "type": "git-commit-pin-v1",
         "source": "https://github.com/vibeforge1111/spark-intelligence-builder",
-        "commit": "b0f5b49d2de130b2147a3c0f76990ca1714ef0c2"
+        "commit": "53411fa9580c3444260f841b0046e274f0aba9b1"
       }
     },
     "domain-chip-memory": {
@@ -63,14 +63,14 @@
     },
     "spark-voice-comms": {
       "source": "https://github.com/vibeforge1111/spark-voice-comms",
-      "commit": "50f9f365ac7d4b977b3f5867253e4c1513047f0f",
+      "commit": "12972319132729ed9c9522ad055f3a984e5b3367",
       "require_signed_commit": false,
       "blessed": true,
       "summary": "Speech I/O chip for Spark voice transcription, provider onboarding, and spoken replies",
       "attestation": {
         "type": "git-commit-pin-v1",
         "source": "https://github.com/vibeforge1111/spark-voice-comms",
-        "commit": "50f9f365ac7d4b977b3f5867253e4c1513047f0f"
+        "commit": "12972319132729ed9c9522ad055f3a984e5b3367"
       }
     },
     "spawner-ui": {
