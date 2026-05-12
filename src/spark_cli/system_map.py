@@ -23,6 +23,7 @@ REVIEW_CANDIDATES_SCHEMA = "spark.os_review_candidates.compiled.v0"
 MEMORY_MOVEMENT_INDEX_SCHEMA = "spark.memory_movement_index.compiled.v0"
 MEMORY_REVIEW_QUEUE_SCHEMA = "spark.memory_review_queue.v1"
 MEMORY_PROOF_CARDS_SCHEMA = "spark.memory_proof_cards.compiled.v1"
+MEMORY_REVIEW_CARDS_SCHEMA = "spark.memory_review_cards.compiled.v1"
 REPO_BOARD_SCHEMA = "spark.repo_board.compiled.v0"
 VOICE_SURFACE_SCHEMA = "spark.voice_surface_view.compiled.v0"
 OPERATING_COCKPIT_SCHEMA = "spark.operating_cockpit.compiled.v0"
@@ -305,6 +306,25 @@ MEMORY_PROOF_CARD_ALLOWED_FIELDS = (
     "durability_tier",
     "freshness",
     "confidence",
+    "relations",
+    "blocked_reasons",
+    "human_next_action",
+    "correction_path",
+    "data_boundary",
+)
+
+MEMORY_REVIEW_CARD_ALLOWED_FIELDS = (
+    "schema_version",
+    "card_id",
+    "owner_system",
+    "surface",
+    "review_type",
+    "decision",
+    "claim_key",
+    "freshness",
+    "winner_source",
+    "stale_source_count",
+    "contradicted_source_count",
     "relations",
     "blocked_reasons",
     "human_next_action",
@@ -2594,6 +2614,8 @@ def inspect_builder_memory_tables(builder_home: Path) -> dict[str, Any]:
             if "memory_lane_records" in memory_tables:
                 out["memory_lane_trace_join"] = inspect_memory_lane_trace_join(conn)
                 out["memory_proof_cards"] = inspect_memory_proof_cards(conn)
+            if "contradiction_records" in tables:
+                out["memory_review_cards"] = inspect_memory_review_cards(conn)
         finally:
             conn.close()
     except Exception as exc:
@@ -2762,6 +2784,103 @@ def safe_memory_proof_card(card: dict[str, Any]) -> dict[str, Any]:
     safe["source_refs_redacted"] = [redacted_identifier("source_ref", item) for item in source_refs[:3]]
     safe["verification_command"] = "spark os memory --json"
     safe["claim_boundary"] = "Memory proof cards are source-owned metadata; they are not memory payloads or mutation authority."
+    return safe
+
+
+def inspect_memory_review_cards(conn: sqlite3.Connection, *, limit: int = 20) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "schema_version": MEMORY_REVIEW_CARDS_SCHEMA,
+        "source": "contradiction_records.facts_json.memory_review_card",
+        "status": "missing",
+        "redaction": (
+            "allowlisted review-card metadata only; claim values, memory payloads, prompts, provider responses, "
+            "transcripts, audio, chat/user identifiers, source evidence JSON, and row identifiers omitted"
+        ),
+        "items": [],
+        "counts": {
+            "item_count": 0,
+            "decision_counts": {},
+            "review_type_counts": {},
+            "freshness_counts": {},
+            "blocked_count": 0,
+        },
+    }
+    columns = [row[1] for row in conn.execute("pragma table_info(contradiction_records)")]
+    if "facts_json" not in columns:
+        out["status"] = "missing_facts_json_column"
+        return out
+    order_column = "last_seen_at" if "last_seen_at" in columns else "rowid"
+    rows = conn.execute(
+        f"""
+        select facts_json
+        from contradiction_records
+        where facts_json like '%spark.memory_review_card.v1%'
+        order by {order_column} desc
+        limit ?
+        """,
+        (max(1, min(100, int(limit or 20))),),
+    ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            facts = json.loads(str(row["facts_json"] or "{}"))
+        except Exception:
+            continue
+        card = as_dict(facts.get("memory_review_card"))
+        safe_card = safe_memory_review_card(card)
+        if safe_card:
+            items.append(safe_card)
+
+    decision_counts: dict[str, int] = {}
+    review_type_counts: dict[str, int] = {}
+    freshness_counts: dict[str, int] = {}
+    blocked_count = 0
+    for item in items:
+        increment_counter(decision_counts, str(item.get("decision") or "unknown"))
+        increment_counter(review_type_counts, str(item.get("review_type") or "unknown"))
+        increment_counter(freshness_counts, str(item.get("freshness") or "unknown"))
+        if str(item.get("decision") or "") in {"blocked", "needs_review"} or as_list(item.get("blocked_reasons")):
+            blocked_count += 1
+
+    out.update(
+        {
+            "status": "present" if items else "missing",
+            "items": items,
+            "counts": {
+                "item_count": len(items),
+                "decision_counts": decision_counts,
+                "review_type_counts": review_type_counts,
+                "freshness_counts": freshness_counts,
+                "blocked_count": blocked_count,
+            },
+        }
+    )
+    return out
+
+
+def safe_memory_review_card(card: dict[str, Any]) -> dict[str, Any]:
+    if str(card.get("schema_version") or "") != "spark.memory_review_card.v1":
+        return {}
+    safe: dict[str, Any] = {}
+    for key in MEMORY_REVIEW_CARD_ALLOWED_FIELDS:
+        value = card.get(key)
+        if key in {"relations", "blocked_reasons"}:
+            safe[key] = [safe_short_string(str(item), limit=80) for item in as_list(value)[:8] if str(item).strip()]
+        elif key in {"stale_source_count", "contradicted_source_count"}:
+            safe[key] = int(value) if isinstance(value, int) else 0
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = safe_short_string(str(value), limit=240) if isinstance(value, str) else value
+    trace_ref = first_string(card.get("trace_ref"))
+    source_refs = [str(item) for item in as_list(card.get("source_refs")) if str(item).strip()]
+    safe["trace_ref_present"] = bool(trace_ref)
+    safe["trace_ref"] = redacted_identifier("trace_ref", trace_ref) if trace_ref else None
+    safe["source_ref_count"] = len(source_refs)
+    safe["source_refs_redacted"] = [redacted_identifier("source_ref", item) for item in source_refs[:3]]
+    safe["verification_command"] = "spark os memory --json"
+    safe["claim_boundary"] = (
+        "Memory review cards are Builder-owned contradiction/freshness metadata; they are not claim values, "
+        "memory payloads, or mutation authority."
+    )
     return safe
 
 
@@ -4427,11 +4546,13 @@ def build_memory_movement_index(builder_home: Path) -> dict[str, Any]:
         "memory_kb_artifacts": summarize_memory_kb_artifacts(builder_home),
         "memory_run_artifacts": summarize_memory_run_artifacts(builder_home),
         "memory_proof_cards": as_dict(builder_memory_tables.get("memory_proof_cards")),
+        "memory_review_cards": as_dict(builder_memory_tables.get("memory_review_cards")),
         "next_required_bridges": [
             "Have Builder write artifacts/memory-movement-index/memory-movement-status.json from inspect_memory_movement_status().",
             "Have domain-chip-memory expose movement counts by lane, authority, source family, and record type without record text.",
             trace_bridge_instruction,
             "Project source-owned MemoryProofCardV1 into Cockpit without granting memory mutation authority.",
+            "Project source-owned MemoryReviewCardV1 contradiction/freshness blockers into Cockpit without claim values.",
             "Promote this index into Builder AOC and cockpit as evidence only, never as instructions or profile truth.",
         ],
     }
@@ -5428,6 +5549,9 @@ def build_operating_cockpit(compiled: dict[str, Any]) -> dict[str, Any]:
                 "proof_card_count": as_dict(
                     as_dict(as_dict(compiled.get("memory_movement_index")).get("memory_proof_cards")).get("counts")
                 ).get("item_count"),
+                "review_card_count": as_dict(
+                    as_dict(as_dict(compiled.get("memory_movement_index")).get("memory_review_cards")).get("counts")
+                ).get("item_count"),
             },
         },
         "action_boundary": "Read-only until high-agency actions carry AuthorityVerdictV1 trace evidence.",
@@ -5445,6 +5569,9 @@ def build_operating_cockpit(compiled: dict[str, Any]) -> dict[str, Any]:
         )[:5],
         "memory_proof_cards": as_list(
             as_dict(as_dict(compiled.get("memory_movement_index")).get("memory_proof_cards")).get("items")
+        )[:5],
+        "memory_review_cards": as_list(
+            as_dict(as_dict(compiled.get("memory_movement_index")).get("memory_review_cards")).get("items")
         )[:5],
         "top_blockers": as_list(system_map.get("gaps"))[:10],
     }

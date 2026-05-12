@@ -973,6 +973,17 @@ class SparkSystemMapTests(unittest.TestCase):
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    create table contradiction_records(
+                        contradiction_id text,
+                        contradiction_key text,
+                        status text,
+                        last_seen_at text,
+                        facts_json text
+                    )
+                    """
+                )
                 conn.executemany(
                     """
                     insert into memory_lane_records(
@@ -1023,6 +1034,53 @@ class SparkSystemMapTests(unittest.TestCase):
                         ("lane-2", "req-private-2", "", "episodic_trace", "captured", "private prompt should stay out"),
                     ],
                 )
+                conn.execute(
+                    """
+                    insert into contradiction_records(
+                        contradiction_id,
+                        contradiction_key,
+                        status,
+                        last_seen_at,
+                        facts_json
+                    )
+                    values (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "ctr-1",
+                        "source_hierarchy:private_claim",
+                        "open",
+                        "2026-05-12T00:00:00+00:00",
+                        json.dumps(
+                            {
+                                "winner": {"value": "new private value"},
+                                "stale_claims": [{"value": "old private value"}],
+                                "memory_review_card": {
+                                    "schema_version": "spark.memory_review_card.v1",
+                                    "card_id": "memory-review:test",
+                                    "trace_ref": "trace-private-review-1",
+                                    "owner_system": "spark-intelligence-builder",
+                                    "surface": "builder",
+                                    "review_type": "source_freshness",
+                                    "decision": "needs_review",
+                                    "claim_key": "private_claim",
+                                    "freshness": "stale",
+                                    "winner_source": "current_diagnostics",
+                                    "stale_source_count": 1,
+                                    "contradicted_source_count": 0,
+                                    "source_refs": ["memory:private-source-ref"],
+                                    "relations": ["source_hierarchy", "private_claim"],
+                                    "blocked_reasons": ["memory_source_stale"],
+                                    "human_next_action": "Review source hierarchy.",
+                                    "correction_path": "Use Builder memory review.",
+                                    "data_boundary": "No private values exported.",
+                                    "winning_value": "new private value",
+                                    "memory_body": "old private value",
+                                    "provider_output": "private model output",
+                                },
+                            }
+                        ),
+                    ),
+                )
                 conn.commit()
             finally:
                 conn.close()
@@ -1051,6 +1109,15 @@ class SparkSystemMapTests(unittest.TestCase):
         self.assertEqual(proof_card["decision"], "support_only")
         self.assertEqual(proof_card["source_ref_count"], 1)
         self.assertTrue(proof_card["trace_ref_present"])
+        self.assertEqual(index["memory_review_cards"]["schema_version"], "spark.memory_review_cards.compiled.v1")
+        self.assertEqual(index["memory_review_cards"]["counts"]["item_count"], 1)
+        review_card = index["memory_review_cards"]["items"][0]
+        self.assertEqual(review_card["owner_system"], "spark-intelligence-builder")
+        self.assertEqual(review_card["review_type"], "source_freshness")
+        self.assertEqual(review_card["decision"], "needs_review")
+        self.assertEqual(review_card["freshness"], "stale")
+        self.assertEqual(review_card["source_ref_count"], 1)
+        self.assertTrue(review_card["trace_ref_present"])
         self.assertGreater(index["memory_review_queue"]["counts"]["item_count"], 0)
         self.assertTrue(all(item.get("operator_paths") for item in index["memory_review_queue"]["items"]))
         self.assertTrue(
@@ -1077,6 +1144,10 @@ class SparkSystemMapTests(unittest.TestCase):
         self.assertNotIn("req-private-1", encoded)
         self.assertNotIn("private memory body", encoded)
         self.assertNotIn("private-chat-123", encoded)
+        self.assertNotIn("private-source-ref", encoded)
+        self.assertNotIn("trace-private-review-1", encoded)
+        self.assertNotIn("old private value", encoded)
+        self.assertNotIn("new private value", encoded)
         self.assertNotIn("private model output", encoded)
         self.assertNotIn("memory_body", encoded)
         self.assertNotIn("provider_output", encoded)
