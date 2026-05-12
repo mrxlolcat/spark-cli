@@ -4005,6 +4005,8 @@ def repo_release_status(name: str, git: dict[str, Any], manifest: dict[str, bool
         return "blocked", "behind upstream", "pull or merge upstream before release"
     if name in CORE_REPOS and not any(manifest.values()):
         return "blocked", "core repo missing Spark manifest", "add or confirm owner manifest before release"
+    if name == "spark-cli" and any(manifest.values()):
+        return "eligible", None, "installer and Spark OS compiler source truth is manifest-declared"
     if registry_present:
         return "eligible", None, "safe to consider for the next verified workstream"
     return "inspect", "not in installer registry", "decide whether this repo should remain local, become a capability, or be ignored"
