@@ -59,6 +59,7 @@ from spark_cli.cli import (
     clone_module_source,
     clone_target_for_module,
     ensure_generated_setup_secrets,
+    ensure_runtime_telegram_relay_secret,
     ensure_bundle_modules_available,
     delete_secret,
     execute_security_revoke_all,
@@ -5263,6 +5264,66 @@ class SparkCliTests(unittest.TestCase):
         values = ensure_generated_setup_secrets({}, [gateway])
         self.assertRegex(values["telegram.relay_secret"], r"^[A-Za-z0-9_-]{24,256}$")
 
+    def test_ensure_runtime_telegram_relay_secret_repairs_missing_secret_without_raw_env_name(self) -> None:
+        gateway = make_module("spark-telegram-bot", ["telegram.ingress"], secrets=["telegram.relay_secret"])
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            setup_path = Path(tmp_dir) / "setup.json"
+            setup_path.write_text('{"bundle":"telegram-starter","secret_keys":[]}', encoding="utf-8")
+            stored: dict[str, str] = {}
+
+            def fake_store(secret_id: str, value: str, preferred: str = "keychain") -> str:
+                stored[secret_id] = value
+                return "file"
+
+            with patch("spark_cli.cli.CONFIG_PATH", setup_path), \
+                 patch("spark_cli.cli.fetch_secret", return_value=None), \
+                 patch("spark_cli.cli.store_secret", side_effect=fake_store):
+                self.assertIsNone(ensure_runtime_telegram_relay_secret([gateway]))
+
+            self.assertIn("telegram.relay_secret", stored)
+            self.assertRegex(stored["telegram.relay_secret"], r"^[A-Za-z0-9_-]{24,256}$")
+            self.assertIn("telegram.relay_secret", load_json(setup_path, {})["secret_keys"])
+
+    def test_start_command_repairs_relay_secret_before_launching_gateway(self) -> None:
+        spawner = Module(
+            name="spawner-ui",
+            path=Path("C:/tmp/spawner-ui"),
+            manifest={
+                "module": {"name": "spawner-ui", "version": "0.0.1", "kind": "app", "plane": "execution"},
+                "needs": {"secrets": ["telegram.relay_secret"]},
+                "run": {"default": {"command": "npm run dev"}},
+            },
+        )
+        gateway = Module(
+            name="spark-telegram-bot",
+            path=Path("C:/tmp/spark-telegram-bot"),
+            manifest={
+                "module": {"name": "spark-telegram-bot", "version": "1.0.0", "kind": "service", "plane": "ingress"},
+                "needs": {"modules": ["spawner-ui"], "secrets": ["telegram.relay_secret"]},
+                "run": {"default": {"command": "npm run dev"}},
+            },
+        )
+        args = build_parser().parse_args(["start", "spark-telegram-bot"])
+        stored: dict[str, str] = {}
+
+        def fake_store(secret_id: str, value: str, preferred: str = "keychain") -> str:
+            stored[secret_id] = value
+            return "file"
+
+        with patch("spark_cli.cli.resolve_installed_modules", return_value={spawner.name: spawner, gateway.name: gateway}), \
+             patch("spark_cli.cli.fetch_secret", return_value=None), \
+             patch("spark_cli.cli.store_secret", side_effect=fake_store), \
+             patch("spark_cli.cli.load_json", return_value={"bundle": "telegram-starter", "secret_keys": []}), \
+             patch("spark_cli.cli.save_json"), \
+             patch("spark_cli.cli.start_module", return_value=True) as start, \
+             patch("sys.stdout", new_callable=StringIO) as output:
+            self.assertEqual(args.func(args), 0)
+
+        self.assertIn("telegram.relay_secret", stored)
+        self.assertEqual(start.call_count, 2)
+        self.assertNotIn("local Telegram relay credential", output.getvalue())
+        self.assertNotIn("TELEGRAM_RELAY_SECRET", output.getvalue())
+
     def test_print_install_summary_mentions_ingress_owner(self) -> None:
         gateway = make_module("spark-telegram-bot", ["telegram.ingress"])
         runtime = make_module("spark-intelligence-builder", ["spark.runtime"])
@@ -6405,6 +6466,28 @@ class SparkCliTests(unittest.TestCase):
 
         self.assertEqual(warning.count("process exited with code 1"), 1)
         self.assertIn("spark logs spark-telegram-bot --lines 80", warning)
+
+    def test_format_start_warning_hides_telegram_relay_secret_env_name(self) -> None:
+        module = Module(
+            name="spark-telegram-bot",
+            path=Path("C:/tmp/spark-telegram-bot"),
+            manifest={"module": {"name": "spark-telegram-bot", "version": "0.1.0", "kind": "service", "plane": "ingress"}},
+        )
+
+        class ExitedProcess:
+            def poll(self) -> int:
+                return 1
+
+        warning = format_start_warning(
+            module,
+            "TELEGRAM_RELAY_SECRET is required for /spawner-events",
+            ExitedProcess(),  # type: ignore[arg-type]
+        )
+
+        self.assertNotIn("TELEGRAM_RELAY_SECRET", warning)
+        self.assertNotIn("telegram.relay_secret", warning)
+        self.assertIn("Spark could not finish connecting Telegram", warning)
+        self.assertIn("spark setup telegram-starter --resume", warning)
 
     def test_process_runtime_detail_names_missing_and_running_modules(self) -> None:
         pids = {

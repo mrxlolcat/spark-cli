@@ -1991,6 +1991,61 @@ def ensure_generated_setup_secrets(secret_values: dict[str, str], modules: list[
     return values
 
 
+def telegram_relay_secret_is_valid(value: str | None) -> bool:
+    if not value:
+        return False
+    return 24 <= len(value) <= 256 and re.fullmatch(r"[A-Za-z0-9_-]+", value) is not None
+
+
+def modules_need_telegram_relay_secret(modules: Iterable[Module]) -> bool:
+    return any("telegram.relay_secret" in module.needed_secrets for module in modules)
+
+
+def generated_env_telegram_relay_secret(modules: Iterable[Module]) -> str | None:
+    values: set[str] = set()
+    for module in modules:
+        value = read_generated_env(generated_module_env_path(module)).get("TELEGRAM_RELAY_SECRET", "").strip()
+        if telegram_relay_secret_is_valid(value):
+            values.add(value)
+    if len(values) == 1:
+        return next(iter(values))
+    return None
+
+
+def remember_setup_secret_key(secret_id: str) -> None:
+    setup_state = load_json(CONFIG_PATH, {})
+    if not isinstance(setup_state, dict):
+        return
+    secret_keys = setup_state.get("secret_keys")
+    if isinstance(secret_keys, list):
+        keys = {str(key) for key in secret_keys}
+    else:
+        keys = set()
+    if secret_id in keys and secret_keys == sorted(keys):
+        return
+    keys.add(secret_id)
+    setup_state["secret_keys"] = sorted(keys)
+    save_json(CONFIG_PATH, setup_state)
+
+
+def ensure_runtime_telegram_relay_secret(modules: Iterable[Module]) -> None:
+    """Repair the machine-generated local relay credential before startup."""
+    module_list = list(modules)
+    if not modules_need_telegram_relay_secret(module_list):
+        return
+
+    secret_id = "telegram.relay_secret"
+    existing = fetch_secret(secret_id)
+    if telegram_relay_secret_is_valid(existing):
+        remember_setup_secret_key(secret_id)
+        return
+
+    recovered = generated_env_telegram_relay_secret(module_list)
+    value = recovered or py_secrets.token_urlsafe(32)
+    store_secret(secret_id, value, preferred="keychain")
+    remember_setup_secret_key(secret_id)
+
+
 def stdin_is_tty() -> bool:
     try:
         return bool(sys.stdin.isatty())
@@ -11249,7 +11304,14 @@ def direct_node_package_script_argv(command: str, cwd: Path) -> list[str] | None
     return None
 
 
+def user_safe_startup_detail(detail: str) -> str:
+    if "TELEGRAM_RELAY_SECRET" in detail or "telegram.relay_secret" in detail:
+        return "Spark could not finish connecting Telegram. Run `spark setup telegram-starter --resume`, then `spark start telegram-starter`."
+    return detail
+
+
 def format_start_warning(module: Module, detail: str, process: subprocess.Popen[Any], profile: str | None = None) -> str:
+    detail = user_safe_startup_detail(detail)
     normalized = normalize_telegram_profile(profile)
     profile_hint = f" --profile {normalized}" if module.name == "spark-telegram-bot" and normalized != DEFAULT_TELEGRAM_PROFILE else ""
     log_hint = f"Run `spark logs {module.name}{profile_hint} --lines 80` for startup logs."
@@ -11620,6 +11682,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     exit_code = 0
     profile = normalize_telegram_profile(getattr(args, "profile", None))
     target_modules = resolve_start_modules(args.target, modules)
+    ensure_runtime_telegram_relay_secret(target_modules)
     if not emit_runtime_supply_chain_guard(target_modules, args):
         return 1
     requested_names = set(expand_targets(args.target, modules, include_all=True))
