@@ -9029,7 +9029,7 @@ def collect_telegram_fix_payload() -> dict[str, Any]:
     )
 
     ok = all(bool(check["ok"]) for check in checks)
-    return {
+    payload = {
         "ok": ok,
         "summary": "Spark Telegram repair",
         "checks": checks,
@@ -9042,6 +9042,77 @@ def collect_telegram_fix_payload() -> dict[str, Any]:
             "spark logs spark-telegram-bot --lines 80",
             "spark setup telegram-starter",
         ],
+    }
+    payload["route_context"] = build_fix_route_context("telegram", payload)
+    return payload
+
+
+def build_fix_route_context(target: str, payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+    ok = all(bool(check.get("ok")) for check in checks if isinstance(check, dict))
+    failed_check_names = [
+        str(check.get("name") or "").strip()
+        for check in checks
+        if isinstance(check, dict) and not bool(check.get("ok"))
+    ]
+    target_labels = {
+        "telegram": "telegram_runtime",
+        "spawner": "spawner_ui",
+        "providers": "provider_auth",
+        "memory": "memory_runtime",
+        "live": "spark_live",
+        "update": "spark_update",
+        "autostart": "spark_autostart",
+    }
+    scope_labels = {
+        "telegram": "local_telegram_repair_guidance",
+        "spawner": "local_spawner_repair_guidance",
+        "providers": "provider_configuration_guidance",
+        "memory": "memory_runtime_repair_guidance",
+        "live": "spark_live_repair_guidance",
+        "update": "spark_update_repair_guidance",
+        "autostart": "spark_autostart_repair_guidance",
+    }
+    credential_checks = {"bot_token", "llm_roles", "provider roles"}
+    consequence_risk = "credential" if any(name in credential_checks for name in failed_check_names) else "medium"
+    route_fit = "blocked" if ok else "exact"
+    return {
+        "schema_version": "spark.repair_route_context.v1",
+        "candidate_route": "spark.repair",
+        "intent": "repair",
+        "latest_instruction": "allow_execution",
+        "intent_clarity": "explicit",
+        "route_fit": route_fit,
+        "consequence_risk": consequence_risk,
+        "permission_required": "none",
+        "authority_verdict": {
+            "schema_version": "spark.authority_verdict.v1",
+            "decision": "not_required",
+            "source_owner": "spark-cli",
+            "action_family": "spark.repair",
+        },
+        "capability_state": "available",
+        "runner_state": "available",
+        "confirmation_state": "not_required",
+        "reversibility": "reversible",
+        "repair_target": target_labels.get(target, "spark_runtime"),
+        "repair_scope": scope_labels.get(target, "local_repair_guidance"),
+        "health_evidence": "fresh_healthy" if ok else "fresh_degraded",
+        "source_status": "present",
+        "freshness": "current_turn",
+        "joined_sources": ["spark-cli.fix", "spark-cli.status"],
+        "failed_checks": failed_check_names[:8],
+        "verification_command": f"spark fix {target} --json",
+        "data_boundary": {
+            "exports_raw_prompt": False,
+            "exports_chat_id": False,
+            "exports_provider_output": False,
+            "exports_memory_body": False,
+            "exports_transcript_body": False,
+            "exports_audio": False,
+            "exports_env_value": False,
+            "exports_secret": False,
+        },
     }
 
 
@@ -9137,7 +9208,9 @@ def collect_simple_fix_payload(target: str) -> dict[str, Any]:
             "next_commands": ["spark autostart status", "spark autostart on --now", "spark fix autostart", "spark live status"],
         },
     }
-    return recipes[target]
+    payload = recipes[target]
+    payload["route_context"] = build_fix_route_context(target, payload)
+    return payload
 
 
 def collect_autostart_fix_payload() -> dict[str, Any]:
