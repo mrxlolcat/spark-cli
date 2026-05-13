@@ -37,6 +37,8 @@ This repo does not own:
 - If an artifact joins evidence from multiple repos, preserve source owner, freshness, blocker, and redacted reference fields.
 - Do not create a new state root when an owner repo can expose metadata safely.
 - Do not treat generated JSON, logs, proof folders, or local workspaces as source truth unless explicitly promoted and documented.
+- If `spark os compile` reports `canonical_runtime_dirty`, stop installer work and clean or quarantine the residue without reading private payloads. Then rerun `spark os compile --json` and require `critical_duplicate_truth_count=0` before any hosted publication claim.
+- Runtime residue belongs under `<spark-home>/state`, not inside module source roots. If residue must be preserved, move it to a dated quarantine path and document the verification command.
 
 ## Privacy Red Lines
 
