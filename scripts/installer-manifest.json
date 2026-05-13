@@ -2,17 +2,17 @@
   "schema": 1,
   "source": {
     "repository": "https://github.com/vibeforge1111/spark-cli",
-    "releaseName": "spark-cli-launch-2026-05-13-spawner-privacy-r2",
-    "ref": "4600c699a7695d55a37580a92407db80277fa98a"
+    "releaseName": "spark-cli-launch-2026-05-13-spawner-privacy-r3",
+    "ref": "3b547630bbbf1389b291e786e259b746756144bd"
   },
   "installers": {
     "install.sh": {
       "path": "scripts/install.sh",
-      "sha256": "8a1cacb2babd175b9f13ec452de4a251682eb2a98c3a799c8060501d7dd6504e"
+      "sha256": "77cea159e2be21d1763cf29398d6d7fadbc906e7d32c323776225f9fdea0adcd"
     },
     "install.ps1": {
       "path": "scripts/install.ps1",
-      "sha256": "326c4106d9c454ec58d08a566a3989b94c4dbd1c76a498963c4ef53da4b8c27d"
+      "sha256": "a1221a401edab36d6955f674669efc1545419fff5500d6862fcf848e116067f0"
     }
   }
 }
