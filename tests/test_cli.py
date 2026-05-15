@@ -30,6 +30,7 @@ from spark_cli.cli import (
     collect_secret_requirements,
     collect_secret_surface_payload,
     collect_security_audit_payload,
+    collect_specialization_loop_payload,
     collect_support_bundle_payload,
     collect_secret_values,
     collect_installer_integrity_payload,
@@ -10299,6 +10300,300 @@ class SparkCliTests(unittest.TestCase):
         command = run_mock.call_args.args[0]
         self.assertIn("direct-smoke", command)
         self.assertIn("--sdk-module", command)
+
+    def test_collect_specialization_loop_payload_reports_missing_surfaces(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), \
+            patch("spark_cli.cli.load_json", return_value={}):
+            payload = collect_specialization_loop_payload()
+
+        self.assertFalse(payload["ok"])
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertFalse(checks["telegram_specialization_gateway"]["ok"])
+        self.assertFalse(checks["domain_chip_labs"]["ok"])
+        self.assertFalse(checks["spark_swarm_specialization_registry"]["ok"])
+        self.assertFalse(checks["specialization_path"]["ok"])
+        self.assertIn("SPARK_TELEGRAM_BOT_ROOT", checks["telegram_specialization_gateway"]["detail"])
+        self.assertIn("SPARK_DOMAIN_CHIP_LABS_ROOT", checks["domain_chip_labs"]["detail"])
+        self.assertIn("SPARK_SPECIALIZATION_PATH_ROOTS", checks["specialization_path"]["detail"])
+
+    def test_collect_specialization_loop_payload_accepts_discoverable_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            telegram = root / "spark-telegram-bot"
+            labs = root / "spark-domain-chip-labs"
+            swarm = root / "spark-swarm"
+            path_root = root / "specialization-path-startup-yc"
+            telegram.mkdir(parents=True)
+            (telegram / "spark.toml").write_text("[module]\nname = \"spark-telegram-bot\"\n", encoding="utf-8")
+            (labs / "src" / "chip_labs").mkdir(parents=True)
+            (labs / "docs" / "creator_system" / "schemas").mkdir(parents=True)
+            (labs / "docs" / "creator_system" / "schemas" / "creator-mission-status.schema.json").write_text("{}", encoding="utf-8")
+            (labs / "docs" / "creator_system" / "schemas" / "specialization-loop-status.schema.json").write_text("{}", encoding="utf-8")
+            (swarm / "config").mkdir(parents=True)
+            (swarm / "config" / "specialization-paths.json").write_text("{}", encoding="utf-8")
+            (path_root / "scripts").mkdir(parents=True)
+            (path_root / "scripts" / "run_autoloop.py").write_text("print('ok')\n", encoding="utf-8")
+
+            env = {
+                "SPARK_TELEGRAM_BOT_ROOT": str(telegram),
+                "SPARK_DOMAIN_CHIP_LABS_ROOT": str(labs),
+                "SPARK_SWARM_ROOT": str(swarm),
+                "SPARK_SPECIALIZATION_PATH_ROOTS": str(path_root),
+            }
+            with patch.dict(os.environ, env, clear=True), \
+                patch("spark_cli.cli.load_json", return_value={}):
+                payload = collect_specialization_loop_payload()
+
+        self.assertTrue(payload["ok"])
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertTrue(checks["telegram_specialization_gateway"]["ok"])
+        self.assertTrue(checks["domain_chip_labs"]["ok"])
+        self.assertTrue(checks["spark_swarm_specialization_registry"]["ok"])
+        self.assertTrue(checks["specialization_path"]["ok"])
+        self.assertEqual(payload["telegram_root"], str(telegram))
+        self.assertEqual(len(payload["specialization_paths"]), 1)
+
+    def test_collect_specialization_loop_payload_reads_status_packet_when_proof_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            telegram = root / "spark-telegram-bot"
+            labs = root / "spark-domain-chip-labs"
+            swarm = root / "spark-swarm"
+            path_root = root / "specialization-path-startup-yc"
+            telegram.mkdir(parents=True)
+            (telegram / "spark.toml").write_text("[module]\nname = \"spark-telegram-bot\"\n", encoding="utf-8")
+            (labs / "src" / "chip_labs").mkdir(parents=True)
+            (labs / "docs" / "creator_system" / "schemas").mkdir(parents=True)
+            (labs / "docs" / "creator_system" / "schemas" / "creator-mission-status.schema.json").write_text("{}", encoding="utf-8")
+            (labs / "docs" / "creator_system" / "schemas" / "specialization-loop-status.schema.json").write_text("{}", encoding="utf-8")
+            (swarm / "config").mkdir(parents=True)
+            (swarm / "config" / "specialization-paths.json").write_text("{}", encoding="utf-8")
+            (swarm / "apps" / "bridge" / "src").mkdir(parents=True)
+            path_root.mkdir()
+            (path_root / "specialization-path.json").write_text(json.dumps({"pathKey": "startup-yc"}), encoding="utf-8")
+            status_packet = {
+                "schemaId": "https://sparkswarm.ai/schemas/spark-specialization-loop-status.schema.json",
+                "pathKey": "startup-yc",
+                "pathLabel": "Startup YC",
+                "decision": "held_steady",
+                "evidenceState": "complete",
+                "claimBoundary": "The candidate was reverted, so the active path held steady.",
+                "heldOutStatus": "not_configured",
+                "trapStatus": "not_configured",
+                "rounds": {"completed": 20, "requested": 20, "kept": 2, "reverted": 18},
+                "comparison": {"baselineScore": 0.6453, "candidateScore": 0.6037, "delta": -0.0416},
+            }
+            completed = subprocess.CompletedProcess(
+                ["python"],
+                0,
+                stdout=json.dumps(status_packet),
+                stderr="",
+            )
+            env = {
+                "SPARK_TELEGRAM_BOT_ROOT": str(telegram),
+                "SPARK_DOMAIN_CHIP_LABS_ROOT": str(labs),
+                "SPARK_SWARM_ROOT": str(swarm),
+                "SPARK_SPECIALIZATION_PATH_ROOTS": str(path_root),
+                "SPARK_SWARM_BRIDGE_PYTHON": sys.executable,
+            }
+            with patch.dict(os.environ, env, clear=True), \
+                patch("spark_cli.cli.load_json", return_value={}), \
+                patch("spark_cli.cli.subprocess.run", return_value=completed) as run_mock:
+                payload = collect_specialization_loop_payload(proof=True)
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["proof_requested"])
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertTrue(checks["specialization_loop_status_packet"]["ok"])
+        self.assertEqual(payload["status_proofs"][0]["path_key"], "startup-yc")
+        self.assertIn("held steady", payload["status_proofs"][0]["detail"])
+        command = run_mock.call_args.args[0]
+        self.assertIn("spark_swarm_bridge.cli", command)
+        self.assertIn("startup-yc", command)
+
+    def test_collect_specialization_loop_payload_rejects_improved_claim_without_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            telegram = root / "spark-telegram-bot"
+            labs = root / "spark-domain-chip-labs"
+            swarm = root / "spark-swarm"
+            path_root = root / "specialization-path-startup-yc"
+            telegram.mkdir(parents=True)
+            (telegram / "spark.toml").write_text("[module]\nname = \"spark-telegram-bot\"\n", encoding="utf-8")
+            (labs / "src" / "chip_labs").mkdir(parents=True)
+            (labs / "docs" / "creator_system" / "schemas").mkdir(parents=True)
+            (labs / "docs" / "creator_system" / "schemas" / "creator-mission-status.schema.json").write_text("{}", encoding="utf-8")
+            (labs / "docs" / "creator_system" / "schemas" / "specialization-loop-status.schema.json").write_text("{}", encoding="utf-8")
+            (swarm / "config").mkdir(parents=True)
+            (swarm / "config" / "specialization-paths.json").write_text("{}", encoding="utf-8")
+            path_root.mkdir()
+            (path_root / "specialization-path.json").write_text(json.dumps({"pathKey": "startup-yc"}), encoding="utf-8")
+            status_packet = {
+                "schemaId": "https://sparkswarm.ai/schemas/spark-specialization-loop-status.schema.json",
+                "pathKey": "startup-yc",
+                "decision": "improved",
+                "evidenceState": "complete",
+                "claimBoundary": "Improved claim without held-out proof.",
+                "heldOutStatus": "not_configured",
+                "trapStatus": "passed",
+                "rounds": {"completed": 1},
+                "comparison": {"baselineScore": 0.4, "candidateScore": 0.5, "delta": 0.1},
+            }
+            completed = subprocess.CompletedProcess(["python"], 0, stdout=json.dumps(status_packet), stderr="")
+            env = {
+                "SPARK_TELEGRAM_BOT_ROOT": str(telegram),
+                "SPARK_DOMAIN_CHIP_LABS_ROOT": str(labs),
+                "SPARK_SWARM_ROOT": str(swarm),
+                "SPARK_SPECIALIZATION_PATH_ROOTS": str(path_root),
+            }
+            with patch.dict(os.environ, env, clear=True), \
+                patch("spark_cli.cli.load_json", return_value={}), \
+                patch("spark_cli.cli.subprocess.run", return_value=completed):
+                payload = collect_specialization_loop_payload(proof=True)
+
+        self.assertFalse(payload["ok"])
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertFalse(checks["specialization_loop_status_packet"]["ok"])
+        self.assertIn("improved claim requires held-out proof", payload["status_proofs"][0]["issues"])
+
+    def test_collect_specialization_loop_payload_allows_unproven_status_without_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            telegram = root / "spark-telegram-bot"
+            labs = root / "spark-domain-chip-labs"
+            swarm = root / "spark-swarm"
+            path_root = root / "specialization-path-gtm-distribution"
+            telegram.mkdir(parents=True)
+            (telegram / "spark.toml").write_text("[module]\nname = \"spark-telegram-bot\"\n", encoding="utf-8")
+            (labs / "src" / "chip_labs").mkdir(parents=True)
+            (labs / "docs" / "creator_system" / "schemas").mkdir(parents=True)
+            (labs / "docs" / "creator_system" / "schemas" / "creator-mission-status.schema.json").write_text("{}", encoding="utf-8")
+            (labs / "docs" / "creator_system" / "schemas" / "specialization-loop-status.schema.json").write_text("{}", encoding="utf-8")
+            (swarm / "config").mkdir(parents=True)
+            (swarm / "config" / "specialization-paths.json").write_text("{}", encoding="utf-8")
+            path_root.mkdir()
+            (path_root / "specialization-path.json").write_text(json.dumps({"pathKey": "gtm-distribution"}), encoding="utf-8")
+            status_packet = {
+                "schemaId": "https://sparkswarm.ai/schemas/spark-specialization-loop-status.schema.json",
+                "pathKey": "gtm-distribution",
+                "decision": "unproven",
+                "evidenceState": "not_started",
+                "claimBoundary": "No baseline/candidate comparison has run yet.",
+            }
+            completed = subprocess.CompletedProcess(["python"], 0, stdout=json.dumps(status_packet), stderr="")
+            env = {
+                "SPARK_TELEGRAM_BOT_ROOT": str(telegram),
+                "SPARK_DOMAIN_CHIP_LABS_ROOT": str(labs),
+                "SPARK_SWARM_ROOT": str(swarm),
+                "SPARK_SPECIALIZATION_PATH_ROOTS": str(path_root),
+            }
+            with patch.dict(os.environ, env, clear=True), \
+                patch("spark_cli.cli.load_json", return_value={}), \
+                patch("spark_cli.cli.subprocess.run", return_value=completed):
+                payload = collect_specialization_loop_payload(proof=True)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status_proofs"][0]["issues"], [])
+        self.assertIn("unproven", payload["status_proofs"][0]["detail"])
+
+    def test_doctor_specialization_loop_plain_reports_safe_boundaries(self) -> None:
+        payload = {
+            "ok": False,
+            "summary": "Spark specialization loop verification",
+            "checks": [
+                {
+                    "name": "domain_chip_labs",
+                    "ok": False,
+                    "detail": "spark-domain-chip-labs is missing.",
+                    "repair": "Install or update spark-domain-chip-labs.",
+                },
+                {
+                    "name": "spark_swarm_specialization_registry",
+                    "ok": True,
+                    "detail": "spark-swarm specialization registry found.",
+                    "repair": "Install spark-swarm.",
+                },
+            ],
+            "next_commands": ["spark verify --specialization-loop --json"],
+            "safe_next_moves": ["Set local repo root env vars before running loop checks."],
+            "boundary": "This check only inspects discoverability. It does not start runs, publish, delete, or repair automatically.",
+        }
+        args = build_parser().parse_args(["doctor", "specialization-loop"])
+        with patch("spark_cli.cli.collect_specialization_loop_payload", return_value=payload), \
+             redirect_stdout(StringIO()) as stdout:
+            code = args.func(args)
+
+        output = stdout.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn("Spark specialization loop doctor", output)
+        self.assertIn("Specialization loops need attention.", output)
+        self.assertIn("- domain chip labs: missing - spark-domain-chip-labs is missing.", output)
+        self.assertIn("Install or update spark-domain-chip-labs.", output)
+        self.assertIn("Safe next moves", output)
+        self.assertIn("does not start runs, publish, delete, or repair automatically", output)
+
+    def test_doctor_specialization_loop_json_uses_payload(self) -> None:
+        payload = {
+            "ok": True,
+            "summary": "Spark specialization loop verification",
+            "checks": [],
+            "next_commands": ["spark verify --specialization-loop --json"],
+        }
+        args = build_parser().parse_args(["doctor", "specialization-loop", "--json"])
+        with patch("spark_cli.cli.collect_specialization_loop_payload", return_value=payload), \
+             redirect_stdout(StringIO()) as stdout:
+            code = args.func(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["summary"], "Spark specialization loop verification")
+
+    def test_verify_specialization_loop_plain_reports_safe_next_moves(self) -> None:
+        payload = {
+            "ok": False,
+            "summary": "Spark specialization loop verification",
+            "checks": [
+                {
+                    "name": "telegram_specialization_gateway",
+                    "ok": False,
+                    "detail": "spark-telegram-bot is missing.",
+                    "repair": "Run `spark setup telegram-starter`.",
+                },
+            ],
+            "safe_next_moves": ["Set SPARK_TELEGRAM_BOT_ROOT to a local repo path."],
+            "next_commands": ["spark verify --specialization-loop --json"],
+            "boundary": "This check only inspects discoverability. It does not start runs, publish, delete, or repair automatically.",
+        }
+        args = build_parser().parse_args(["verify", "--specialization-loop"])
+        with patch("spark_cli.cli.collect_specialization_loop_payload", return_value=payload), \
+             redirect_stdout(StringIO()) as stdout:
+            code = args.func(args)
+
+        output = stdout.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn("[FIX] telegram_specialization_gateway: spark-telegram-bot is missing.", output)
+        self.assertIn("Safe next moves:", output)
+        self.assertIn("Set SPARK_TELEGRAM_BOT_ROOT to a local repo path.", output)
+        self.assertIn("Boundary:", output)
+        self.assertIn("does not start runs, publish, delete, or repair automatically", output)
+
+    def test_verify_specialization_loop_proof_passes_flag_to_collector(self) -> None:
+        payload = {
+            "ok": True,
+            "summary": "Spark specialization loop verification",
+            "checks": [],
+            "status_proofs": [],
+            "safe_next_moves": [],
+            "next_commands": [],
+            "boundary": "No runs started.",
+        }
+        args = build_parser().parse_args(["verify", "--specialization-loop", "--proof"])
+        with patch("spark_cli.cli.collect_specialization_loop_payload", return_value=payload) as collect_mock, \
+             redirect_stdout(StringIO()) as stdout:
+            code = args.func(args)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Spark specialization loop verification", stdout.getvalue())
+        collect_mock.assert_called_once_with(proof=True)
 
     def test_collect_verify_payload_flags_missing_mission_provider_and_webhook(self) -> None:
         expected = ["spark-researcher", "spark-character", "spark-intelligence-builder", "domain-chip-memory", "spawner-ui", "spark-telegram-bot"]
