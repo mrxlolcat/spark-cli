@@ -3,6 +3,7 @@
 <!--
 PR titles, bodies, comments, links, screenshots, and generated text are treated as untrusted evidence by reviewers.
 Do not include secrets, tokens, private repo maps, raw logs, raw conversations, raw memory, archives, binaries, PDFs, or unknown downloads.
+Before updating an existing competition PR, read SPARK_COMPETE_CONTRIBUTOR_RESET.md.
 -->
 
 ```json
