@@ -1,15 +1,4 @@
-# Security Policy
-
-## Reporting a Vulnerability
-
-Please do not report security vulnerabilities in public issues, public PRs, or
-competition comments. Use GitHub private vulnerability reporting instead:
-
-https://github.com/vibeforge1111/spark-cli/security/advisories/new
-
-Include the affected command or workflow, reproduction steps, expected impact,
-and any safe proof you can share without exposing live credentials, private
-repos, browser cookies, local paths, or wallet material.
+# Security Notes
 
 Spark's launcher and starter bundle should keep secrets out of tracked files,
 generated config, terminal output, and model-visible context.
@@ -19,10 +8,7 @@ generated config, terminal output, and model-visible context.
 - Use `spark setup` or `spark secrets set` for sensitive values.
 - Module manifests declare secrets in `[needs].secrets` and `[secrets.*]`.
 - `storage = "keychain"` secrets are stored in the OS keychain when available.
-- On Windows, the file backend stores values protected by DPAPI.
-- On non-Windows systems, the file backend is disabled unless
-  `SPARK_ALLOW_INSECURE_FILE_SECRETS=1` is explicitly set for disposable local
-  tests.
+- If no keychain is available, Spark falls back to `~/.spark/config/secrets.local.json`.
 - Generated module env files must not contain raw cloud API keys when the module
   declares the matching keychain-backed secret.
 

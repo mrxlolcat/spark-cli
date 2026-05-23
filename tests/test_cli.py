@@ -5058,8 +5058,7 @@ class SparkCliTests(unittest.TestCase):
                 module_path = fixture_root / name
                 module_path.mkdir()
                 registry["modules"][name] = {"source": str(module_path), "blessed": True}
-                # This fixture writes secret ids in spark.toml, not secret values.
-                # codeql[py/clear-text-storage-sensitive-data]
+                # codeql[py/clear-text-storage-sensitive-data] This fixture writes secret ids in spark.toml, not secret values.
                 module_path.joinpath("spark.toml").write_text(
                     "\n".join(
                         [

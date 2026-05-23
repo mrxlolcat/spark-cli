@@ -13751,8 +13751,7 @@ def cmd_secrets_set(args: argparse.Namespace) -> int:
     if not value:
         raise SystemExit(f"Refusing to store empty value for {args.secret_id}.")
     backend = store_secret(args.secret_id, value, preferred=args.backend)
-    # This prints the secret label and backend, never the stored value.
-    # codeql[py/clear-text-logging-sensitive-data]
+    # codeql[py/clear-text-logging-sensitive-data] This prints the secret label and backend, never the stored value.
     print(f"Stored {args.secret_id} in {backend}.")
     return 0
 
@@ -13762,25 +13761,21 @@ def cmd_secrets_get(args: argparse.Namespace) -> int:
     if value is None:
         raise SystemExit(f"No value stored for {args.secret_id}.")
     if args.reveal:
-        # `spark secrets get --reveal` is an explicit local operator command.
-        # codeql[py/clear-text-logging-sensitive-data]
+        # codeql[py/clear-text-logging-sensitive-data] `spark secrets get --reveal` is an explicit local operator command.
         print(value)
     else:
         masked = value[:4] + "..." + value[-2:] if len(value) > 6 else "***"
-        # The value is masked by default; the printed id is a label.
-        # codeql[py/clear-text-logging-sensitive-data]
+        # codeql[py/clear-text-logging-sensitive-data] The value is masked by default; the printed id is a label.
         print(f"{args.secret_id} -> {masked} (pass --reveal to print full value)")
     return 0
 
 
 def cmd_secrets_delete(args: argparse.Namespace) -> int:
     if delete_secret(args.secret_id):
-        # This prints only the secret label after deletion.
-        # codeql[py/clear-text-logging-sensitive-data]
+        # codeql[py/clear-text-logging-sensitive-data] This prints only the secret label after deletion.
         print(f"Deleted {args.secret_id}.")
         return 0
-    # This prints only the secret label.
-    # codeql[py/clear-text-logging-sensitive-data]
+    # codeql[py/clear-text-logging-sensitive-data] This prints only the secret label.
     print(f"No value stored for {args.secret_id}.")
     return 1
 
