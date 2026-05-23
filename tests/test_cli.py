@@ -47,6 +47,7 @@ from spark_cli.cli import (
     collect_telegram_fix_payload,
     collect_verify_payload,
     configure_telegram_profile,
+    cmd_list,
     cmd_secrets_set,
     cmd_live,
     cmd_onboard,
@@ -4814,6 +4815,26 @@ class SparkCliTests(unittest.TestCase):
     def test_purge_spark_home_refuses_home_directory(self) -> None:
         with self.assertRaises(SystemExit):
             purge_spark_home(Path.home())
+
+    def test_list_prints_empty_state_guidance_when_no_modules_exist(self) -> None:
+        args = Namespace()
+        with patch("spark_cli.cli.load_registry_definition", return_value={"modules": {}}), \
+             patch("spark_cli.cli.load_json", return_value={}), \
+             patch("spark_cli.cli.discover_modules", return_value={}), \
+             patch("sys.stdout", new_callable=StringIO) as stdout:
+            self.assertEqual(cmd_list(args), 0)
+
+        output = stdout.getvalue()
+        self.assertIn("No installed Spark modules recorded.", output)
+        self.assertIn("spark setup telegram-starter", output)
+
+    def test_skip_install_commands_help_text_is_present_on_install_setup_and_update(self) -> None:
+        parser = build_parser()
+        commands = parser._subparsers._group_actions[0].choices
+
+        self.assertIn("Skip post-install commands", commands["install"].format_help())
+        self.assertIn("Skip install commands", commands["setup"].format_help())
+        self.assertIn("Skip post-update install commands", commands["update"].format_help())
 
     def test_guide_prints_normie_onboarding_surface(self) -> None:
         args = build_parser().parse_args(["guide"])
