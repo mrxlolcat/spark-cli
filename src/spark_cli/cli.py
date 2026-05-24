@@ -4810,8 +4810,18 @@ def detect_uninstall_blockers(removing_modules: list[Module], installed_modules:
     return blockers
 
 
+def module_healthcheck_profile(module: Module, setup_state: dict[str, Any]) -> str | None:
+    if module.name != "spark-telegram-bot":
+        return None
+    profiles = setup_state.get("telegram_profiles") if isinstance(setup_state, dict) else None
+    if isinstance(profiles, dict) and profiles:
+        return primary_telegram_profile(setup_state)
+    return None
+
+
 def evaluate_module_health(module: Module) -> dict[str, Any]:
-    runtime_env = module_runtime_env(module)
+    setup_state = load_json(CONFIG_PATH, {}) if module.name == "spark-telegram-bot" else {}
+    runtime_env = module_runtime_env(module, module_healthcheck_profile(module, setup_state))
     if module.name == "spawner-ui" and spawner_should_use_liveness_endpoint(runtime_env):
         health_url = spawner_runtime_health_url(module, runtime_env)
         failure_hint = str(module.manifest.get("healthcheck", {}).get("failure_hint", "")).strip() or None
@@ -4835,7 +4845,7 @@ def evaluate_module_health(module: Module) -> dict[str, Any]:
             "failure_hint": failure_hint,
             "success_hint": success_hint,
         }
-    if module.name == "spark-telegram-bot" and telegram_ingress_is_external():
+    if module.name == "spark-telegram-bot" and telegram_ingress_is_external(setup_state):
         return {
             "name": module.name,
             "version": module.version,
