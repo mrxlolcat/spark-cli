@@ -6887,6 +6887,34 @@ class SparkCliTests(unittest.TestCase):
         self.assertEqual(result["detail"], "command timed out after 7s")
         run.assert_called_once_with("npm run health", module.path, env={}, timeout=7)
 
+    def test_evaluate_module_health_uses_primary_telegram_profile_env(self) -> None:
+        module = Module(
+            name="spark-telegram-bot",
+            path=Path("C:/tmp/spark-telegram-bot"),
+            manifest={
+                "module": {"name": "spark-telegram-bot", "version": "0.1.0", "kind": "service", "plane": "ingress"},
+                "healthcheck": {"command": "npm run health:polling"},
+            },
+        )
+        setup_state = {
+            "primary_telegram_profile": "spark-recursive",
+            "telegram_profiles": {
+                "spark-agi": {"relay_port": 8789},
+                "spark-recursive": {"relay_port": 8791},
+            },
+        }
+        runtime_env = {"TELEGRAM_RELAY_PORT": "8791", "SPARK_TELEGRAM_PROFILE": "spark-recursive"}
+        completed = subprocess.CompletedProcess("npm run health:polling", 0, stdout="ok", stderr="")
+
+        with patch("spark_cli.cli.load_json", return_value=setup_state), \
+             patch("spark_cli.cli.module_runtime_env", return_value=runtime_env) as runtime_env_for_module, \
+             patch("spark_cli.cli.run_runtime_command", return_value=completed) as run:
+            result = evaluate_module_health(module)
+
+        self.assertTrue(result["healthy"])
+        runtime_env_for_module.assert_called_once_with(module, "spark-recursive")
+        run.assert_called_once_with("npm run health:polling", module.path, env=runtime_env, timeout=10)
+
     def test_format_start_warning_mentions_running_process_and_logs(self) -> None:
         module = Module(
             name="spawner-ui",
