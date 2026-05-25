@@ -53,6 +53,36 @@ class BrowserUseCliTests(unittest.TestCase):
         self.assertFalse(payload["proof_fresh"])
         self.assertIn("stale", payload["last_failure_reason"])
 
+    def test_status_accepts_builder_screenshot_proof_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            status_path = Path(tmp_dir) / "state" / "browser-use" / "status.json"
+            screenshot = Path(tmp_dir) / "smoke-screenshot.png"
+            status_path.parent.mkdir(parents=True)
+            screenshot.write_bytes(b"png")
+            status_path.write_text(
+                cli.json.dumps(
+                    {
+                        "status": "ready",
+                        "last_success_at": datetime.now(timezone.utc).isoformat(),
+                        "proofs": {
+                            "doctor": {"status": "success"},
+                            "public_page_open": {"status": "success"},
+                            "state_read": {"status": "success"},
+                            "screenshot_capture": {"status": "success", "path": str(screenshot)},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(cli, "BROWSER_USE_STATUS_DIR", status_path.parent), \
+                 patch.object(cli, "BROWSER_USE_STATUS_PATH", status_path), \
+                 patch("spark_cli.cli.browser_use_cli_path", return_value="browser-use"), \
+                 patch("spark_cli.cli.browser_use_package_available", return_value=True):
+                payload = cli.browser_use_status_payload()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "ready")
+
     def test_probe_writes_ready_receipt_for_public_page_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             status_path = Path(tmp_dir) / "state" / "browser-use" / "status.json"
