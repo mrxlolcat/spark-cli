@@ -184,12 +184,124 @@ class BrowserUseCliTests(unittest.TestCase):
             self.assertTrue(Path(payload["screenshot_path"]).exists())
             self.assertIn("screenshot capture", payload["proven_scope"])
 
-    def test_open_blocks_local_urls_by_default(self) -> None:
-        payload = cli.browser_use_action_payload("http://127.0.0.1:3333")
+    def test_open_allows_local_urls_for_operator_browser_use(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            status_path = Path(tmp_dir) / "state" / "browser-use" / "status.json"
+
+            def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                if "eval" in argv:
+                    return subprocess.CompletedProcess(argv, 0, stdout='result: {"title":"Mission Control","url":"http://127.0.0.1:3333/","text":"Kanban"}', stderr="")
+                return subprocess.CompletedProcess(argv, 0, stdout="Kanban", stderr="")
+
+            with patch.object(cli, "BROWSER_USE_STATUS_DIR", status_path.parent), \
+                 patch.object(cli, "BROWSER_USE_STATUS_PATH", status_path), \
+                 patch("spark_cli.cli.browser_use_cli_path", return_value="browser-use"), \
+                 patch("spark_cli.cli.browser_use_package_available", return_value=True), \
+                 patch("spark_cli.cli.subprocess.run", side_effect=fake_run):
+                payload = cli.browser_use_action_payload("http://127.0.0.1:3333")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["final_url"], "http://127.0.0.1:3333/")
+
+    def test_open_still_blocks_metadata_urls(self) -> None:
+        payload = cli.browser_use_action_payload("http://169.254.169.254")
 
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["status"], "blocked")
-        self.assertIn("local-only host", payload["last_failure_reason"])
+        self.assertIn("metadata service", payload["last_failure_reason"])
+
+    def test_task_runs_browser_use_agent_and_writes_receipt(self) -> None:
+        async def fake_agent(
+            goal: str,
+            *,
+            start_url: str = "",
+            max_steps: int = 25,
+            history_path: Path | None = None,
+            start_page: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            if history_path is not None:
+                history_path.write_text("{}", encoding="utf-8")
+            return {
+                "final_result": "The page looks good after checking the primary flow.",
+                "urls": [start_url],
+                "action_names": ["open", "extract"],
+                "number_of_steps": 2,
+                "total_duration_seconds": 1.2,
+                "is_done": True,
+                "is_successful": True,
+                "is_validated": False,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            status_path = Path(tmp_dir) / "state" / "browser-use" / "status.json"
+            with patch.object(cli, "BROWSER_USE_STATUS_DIR", status_path.parent), \
+                 patch.object(cli, "BROWSER_USE_STATUS_PATH", status_path), \
+                 patch("spark_cli.cli.browser_use_cli_path", return_value="browser-use"), \
+                 patch("spark_cli.cli.browser_use_package_available", return_value=True), \
+                 patch("spark_cli.cli.browser_use_task_start_page", return_value={"ok": True, "final_url": "http://127.0.0.1:3333", "title": "Local", "text_excerpt": "Kanban"}), \
+                 patch("spark_cli.cli.run_browser_use_agent_task", side_effect=fake_agent):
+                payload = cli.browser_use_task_payload("review the page", start_url="http://127.0.0.1:3333", max_steps=4)
+                receipt_exists = Path(payload["receipt_path"]).exists()
+                history_exists = Path(payload["history_path"]).exists()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "task")
+        self.assertEqual(payload["number_of_steps"], 2)
+        self.assertIn("multi-step browser task", payload["proven_scope"])
+        self.assertEqual(payload["start_page"]["title"], "Local")
+        self.assertTrue(receipt_exists)
+        self.assertTrue(history_exists)
+
+    def test_task_requires_goal(self) -> None:
+        payload = cli.browser_use_task_payload("")
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "blocked")
+        self.assertIn("task is required", payload["last_failure_reason"])
+
+    def test_task_receipt_fails_when_agent_does_not_finish(self) -> None:
+        async def fake_agent(
+            goal: str,
+            *,
+            start_url: str = "",
+            max_steps: int = 25,
+            history_path: Path | None = None,
+            start_page: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            return {
+                "final_result": "",
+                "errors": ["Failed to complete task in maximum steps"],
+                "number_of_steps": 3,
+                "is_done": False,
+                "is_successful": False,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            status_path = Path(tmp_dir) / "state" / "browser-use" / "status.json"
+            with patch.object(cli, "BROWSER_USE_STATUS_DIR", status_path.parent), \
+                 patch.object(cli, "BROWSER_USE_STATUS_PATH", status_path), \
+                 patch("spark_cli.cli.browser_use_cli_path", return_value="browser-use"), \
+                 patch("spark_cli.cli.browser_use_package_available", return_value=True), \
+                 patch("spark_cli.cli.browser_use_task_start_page", return_value={"ok": True, "final_url": "https://example.com", "title": "Example", "text_excerpt": "Example Domain"}), \
+                 patch("spark_cli.cli.run_browser_use_agent_task", side_effect=fake_agent):
+                payload = cli.browser_use_task_payload("review the page", start_url="https://example.com", max_steps=3)
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "failed")
+        self.assertIn("maximum steps", payload["last_failure_reason"])
+
+    def test_task_receipt_fails_when_judge_rejects_result(self) -> None:
+        payload = {
+            "final_result": "Looks done.",
+            "is_done": True,
+            "is_successful": True,
+            "is_judged": True,
+            "is_validated": False,
+            "judgement": "Judge Verdict: FAIL - fabricated page text.",
+        }
+
+        self.assertFalse(cli.browser_use_task_completed(payload))
+        self.assertIn("fabricated", cli.browser_use_task_failure_reason(payload))
 
 
 if __name__ == "__main__":
