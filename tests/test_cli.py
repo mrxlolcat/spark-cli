@@ -515,7 +515,7 @@ class SparkCliTests(unittest.TestCase):
 
     def test_sandbox_target_name_validation(self) -> None:
         self.assertEqual(validate_target_name("odyssey-vps"), "odyssey-vps")
-        for value in ["Odyssey", "../oops", "a", "bad_name", "bad/target", "bad-"]:
+        for value in ["Odyssey", "../oops", "a", "bad_name", "bad/target", "bad-", "con", "aux", "com1", "lpt9"]:
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     validate_target_name(value)
@@ -526,6 +526,10 @@ class SparkCliTests(unittest.TestCase):
             self.assertEqual(resolve_safe_output_path("artifact.txt", root=root), root / "artifact.txt")
             with self.assertRaises(ValueError):
                 resolve_safe_output_path("../escape.txt", root=root)
+            for value in ["CON", "aux.txt", "safe/COM1.log", "nested/lpt9/output.txt"]:
+                with self.subTest(value=value):
+                    with self.assertRaises(ValueError):
+                        resolve_safe_output_path(value, root=root)
 
     def test_sandbox_audit_event_redacts_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -761,7 +765,21 @@ class SparkCliTests(unittest.TestCase):
     def test_ssh_target_validation_rejects_root_urls_and_metadata(self) -> None:
         with self.assertRaises(ValueError):
             validate_ssh_user("root")
-        for host in ["ssh://example.test", "spark@example.test", "example.test/path", "169.254.169.254", "-badhost"]:
+        for host in [
+            "ssh://example.test",
+            "spark@example.test",
+            "example.test/path",
+            "169.254.169.254",
+            "169.254.169.254.",
+            "::ffff:169.254.169.254",
+            "fd00:ec2::254",
+            "metadata.google.internal.",
+            "2852039166",
+            "0xa9fea9fe",
+            "169.254.43518",
+            "0251.0376.0251.0376",
+            "-badhost",
+        ]:
             with self.subTest(host=host):
                 with self.assertRaises(ValueError):
                     validate_ssh_host(host)
