@@ -25,7 +25,7 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(hf_[A-Za-z0-9]{20,})\b"),
     re.compile(r"\b(AIza[0-9A-Za-z_\-]{25,})\b"),
     re.compile(r"\b(AKI[AI][A-Z0-9]{16})\b"),
-    re.compile(r"\b(ghp_[A-Za-z0-9]{20,})\b"),
+    re.compile(r"\b(gh[oprsu]_[A-Za-z0-9]{20,})\b"),
     re.compile(r"\b(github_pat_[A-Za-z0-9_]{20,})\b"),
     re.compile(r"\b(glpat-[A-Za-z0-9_\-]{20,})\b"),
     re.compile(r"\b(npm_[A-Za-z0-9]{10,})\b"),
@@ -80,6 +80,16 @@ def redact_sandbox_text(text: str) -> str:
     return redacted
 
 
+def _decode_utf8_prefix(data: bytes) -> str:
+    prefix = data
+    while prefix:
+        try:
+            return prefix.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            prefix = prefix[: exc.start]
+    return ""
+
+
 def bound_sandbox_output(
     text: str,
     *,
@@ -93,7 +103,7 @@ def bound_sandbox_output(
     next_text = "\n".join(lines[:max_lines])
     next_bytes = next_text.encode("utf-8", errors="replace")
     if len(next_bytes) > max_bytes:
-        next_text = next_bytes[:max_bytes].decode("utf-8", errors="ignore")
+        next_text = _decode_utf8_prefix(next_bytes[:max_bytes])
     if truncated:
         next_text = f"{next_text}\n[output truncated]"
     return BoundedOutput(
